@@ -128,3 +128,377 @@ impl<V> BranchNode<V> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{pm_tree_branch, pm_tree_key};
+
+    #[test]
+    fn from_choices() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = BranchNode::from_choices({
+            let mut choices: [Option<Box<Node<i32>>>; 16] = Default::default();
+
+            choices[0] = Some(Box::new(
+                pm_tree_branch! {
+                    leaf { key_a => 42 }
+                }
+                .into(),
+            ));
+            choices[1] = Some(Box::new(
+                pm_tree_branch! {
+                    leaf { key_b => 43 }
+                }
+                .into(),
+            ));
+
+            choices
+        });
+
+        assert_eq!(
+            node,
+            pm_tree_branch! {
+                branch {
+                    0 => leaf { key_a => 42 },
+                    1 => leaf { key_b => 43 },
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn choices() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        assert_eq!(node.choices(), &{
+            let mut choices: [Option<Box<Node<i32>>>; 16] = Default::default();
+
+            choices[0] = Some(Box::new(
+                pm_tree_branch! {
+                    leaf { key_a => 42 }
+                }
+                .into(),
+            ));
+            choices[1] = Some(Box::new(
+                pm_tree_branch! {
+                    leaf { key_b => 43 }
+                }
+                .into(),
+            ));
+
+            choices
+        });
+    }
+
+    #[test]
+    fn get_some() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        assert_eq!(node.get(&key_a, 0), Some(&42));
+        assert_eq!(node.get(&key_b, 0), Some(&43));
+    }
+
+    #[test]
+    fn get_none() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("2000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        assert_eq!(node.get(&key_c, 0), None);
+    }
+
+    #[test]
+    fn insert() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("2000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let (node, old_value) = node.insert(&key_c, 44, 0);
+
+        assert_eq!(old_value, None);
+        assert_eq!(
+            node,
+            pm_tree_branch! {
+                branch {
+                    0 => leaf { key_a => 42 },
+                    1 => leaf { key_b => 43 },
+                    2 => leaf { key_c => 44 },
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn insert_override() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let (node, old_value) = node.insert(&key_b, 44, 0);
+
+        assert_eq!(old_value, Some(43));
+        assert_eq!(
+            node,
+            pm_tree_branch! {
+                branch {
+                    0 => leaf { key_a => 42 },
+                    1 => leaf { key_b => 44 },
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn remove() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("2000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+                2 => leaf { key_c => 44 },
+            }
+        };
+
+        let (node, old_value) = node.remove(&key_c, 0);
+
+        assert_eq!(old_value, Some(44));
+        assert_eq!(
+            node,
+            Some((
+                None,
+                pm_tree_branch! {
+                    branch {
+                        0 => leaf { key_a => 42 },
+                        1 => leaf { key_b => 43 },
+                    }
+                }
+                .into(),
+            )),
+        );
+    }
+
+    #[test]
+    fn remove_simplify() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let (node, old_value) = node.remove(&key_b, 0);
+
+        assert_eq!(old_value, Some(43));
+        assert_eq!(
+            node,
+            Some((
+                Some(0),
+                pm_tree_branch! {
+                    leaf { key_a => 42 }
+                }
+                .into(),
+            )),
+        );
+    }
+
+    #[test]
+    fn remove_passthrough() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("0100000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => branch {
+                    0 => leaf { key_a => 42 },
+                    1 => leaf { key_c => 44 },
+                },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let (node, old_value) = node.remove(&key_c, 0);
+
+        assert_eq!(old_value, Some(44));
+        assert_eq!(
+            node,
+            Some((
+                None,
+                pm_tree_branch! {
+                    branch {
+                        0 => leaf { key_a => 42 },
+                        1 => leaf { key_b => 43 },
+                    }
+                }
+                .into(),
+            )),
+        );
+    }
+
+    #[test]
+    fn remove_nonexistent() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("2000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let (node, old_value) = node.remove(&key_c, 0);
+
+        assert_eq!(old_value, None);
+        assert_eq!(
+            node,
+            Some((
+                None,
+                pm_tree_branch! {
+                    branch {
+                        0 => leaf { key_a => 42 },
+                        1 => leaf { key_b => 43 },
+                    }
+                }
+                .into(),
+            )),
+        );
+    }
+
+    #[test]
+    fn drain_filter() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("2000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+                2 => leaf { key_c => 44 },
+            }
+        };
+
+        let mut drained_items = Vec::new();
+        let node = node.drain_filter(&mut |key, _| key == &key_c, &mut drained_items, 0);
+
+        assert_eq!(
+            node,
+            Some((
+                None,
+                pm_tree_branch! {
+                    branch {
+                        0 => leaf { key_a => 42 },
+                        1 => leaf { key_b => 43 },
+                    }
+                }
+                .into(),
+            )),
+        );
+        assert_eq!(&drained_items, &[(key_c, 44)]);
+    }
+
+    #[test]
+    fn drain_filter_simplify() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let node = pm_tree_branch! {
+            branch {
+                0 => leaf { key_a => 42 },
+                1 => leaf { key_b => 43 },
+            }
+        };
+
+        let mut drained_items = Vec::new();
+        let node = node.drain_filter(&mut |key, _| key == &key_b, &mut drained_items, 0);
+
+        assert_eq!(
+            node,
+            Some((
+                Some(0),
+                pm_tree_branch! {
+                    leaf { key_a => 42 }
+                }
+                .into(),
+            )),
+        );
+        assert_eq!(&drained_items, &[(key_b, 43)]);
+    }
+}
