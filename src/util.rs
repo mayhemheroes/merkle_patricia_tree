@@ -45,3 +45,84 @@ impl<'a> Iterator for KeySegmentIterator<'a> {
         Some(value)
     }
 }
+
+/// Create a new Patricia Merkle tree key.
+#[cfg(test)]
+#[macro_export]
+macro_rules! pm_tree_key {
+    ( $key:literal ) => {{
+        assert_eq!($key.len(), 64, "Tree keys must be 64 nibbles in length.");
+        let key: [u8; 32] = $key
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|x| {
+                u8::from_str_radix(std::str::from_utf8(x).unwrap(), 16)
+                    .expect("Key contains non-hexadecimal characters.")
+            })
+            .collect::<Vec<u8>>()
+            .try_into()
+            .unwrap();
+
+        key
+    }};
+}
+
+/// Create a new Patricia Merkle Tree.
+#[cfg(test)]
+#[macro_export]
+macro_rules! pm_tree {
+    // Create an empty tree (with deduced value type).
+    () => {
+        PatriciaMerkleTree {
+            root_node: None,
+        }
+    };
+    // Create an empty tree (with explicit value type).
+    ( < $t:ty > ) => {
+        PatriciaMerkleTree::<$t> {
+            root_node: None,
+        }
+    };
+    // Create a new tree.
+    ( $type:ident { $( $root_node:tt )* } ) => {
+        PatriciaMerkleTree {
+            root_node: Some(pm_tree_branch!($type { $( $root_node )* }).into()),
+        }
+    };
+}
+
+#[cfg(test)]
+#[macro_export]
+macro_rules! pm_tree_branch {
+    // Internal.
+    ( branch { $( $key:literal => $type:ident { $( $node:tt )* } ),* $(,)? } ) => {
+        BranchNode::from_choices({
+            let mut choices: [Option<Box<Node<_>>>; 16] = Default::default();
+            $( choices[$key] = Some(Box::new(pm_tree_branch!($type { $( $node )* }).into())); )*
+            choices
+        })
+    };
+    // Internal.
+    ( extension { $prefix:literal, $type:ident { $( $node:tt )* } } ) => {
+        ExtensionNode::from_prefix_child(
+            {
+                let value = $prefix
+                    .as_bytes()
+                    .into_iter()
+                    .map(|x| {
+                        (*x as char)
+                            .to_digit(16)
+                            .expect("Prefix contains non-hexadecimal characters.") as u8
+                    })
+                    .collect::<Vec<u8>>();
+
+                value
+            },
+            pm_tree_branch!($type { $( $node )* }).into(),
+        )
+    };
+    // Internal.
+    ( leaf { $key:expr => $value:expr } ) => {
+        LeafNode::from_key_value($key, $value)
+    };
+}
