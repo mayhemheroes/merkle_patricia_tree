@@ -73,20 +73,20 @@ macro_rules! pm_tree_key {
 macro_rules! pm_tree {
     // Create an empty tree (with deduced value type).
     () => {
-        PatriciaMerkleTree {
+        $crate::PatriciaMerkleTree {
             root_node: None,
         }
     };
     // Create an empty tree (with explicit value type).
     ( < $t:ty > ) => {
-        PatriciaMerkleTree::<$t> {
+        $crate::PatriciaMerkleTree::<$t> {
             root_node: None,
         }
     };
     // Create a new tree.
     ( $type:ident { $( $root_node:tt )* } ) => {
-        PatriciaMerkleTree {
-            root_node: Some(pm_tree_branch!($type { $( $root_node )* }).into()),
+        $crate::PatriciaMerkleTree {
+            root_node: Some($crate::pm_tree_branch!($type { $( $root_node )* }).into()),
         }
     };
 }
@@ -96,15 +96,15 @@ macro_rules! pm_tree {
 macro_rules! pm_tree_branch {
     // Internal.
     ( branch { $( $key:literal => $type:ident { $( $node:tt )* } ),* $(,)? } ) => {
-        BranchNode::from_choices({
+        $crate::node::BranchNode::from_choices({
             let mut choices: [Option<Box<Node<_>>>; 16] = Default::default();
-            $( choices[$key] = Some(Box::new(pm_tree_branch!($type { $( $node )* }).into())); )*
+            $( choices[$key] = Some(Box::new($crate::pm_tree_branch!($type { $( $node )* }).into())); )*
             choices
         })
     };
     // Internal.
     ( extension { $prefix:literal, $type:ident { $( $node:tt )* } } ) => {
-        ExtensionNode::from_prefix_child(
+        $crate::node::ExtensionNode::from_prefix_child(
             {
                 let value = $prefix
                     .as_bytes()
@@ -118,11 +118,11 @@ macro_rules! pm_tree_branch {
 
                 value
             },
-            pm_tree_branch!($type { $( $node )* }).into(),
+            $crate::pm_tree_branch!($type { $( $node )* }).into(),
         )
     };
     // Internal.
     ( leaf { $key:expr => $value:expr } ) => {
-        LeafNode::from_key_value($key, $value)
+        $crate::node::LeafNode::from_key_value($key, $value)
     };
 }
