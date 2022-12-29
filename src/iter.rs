@@ -77,3 +77,71 @@ impl<'a, V> Iterator for TreeIterator<'a, V> {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{pm_tree, pm_tree_key};
+
+    #[test]
+    fn iterate_empty() {
+        let tree = pm_tree!(<()>);
+        assert_eq!(&tree.iter().collect::<Vec<_>>(), &[]);
+    }
+
+    #[test]
+    fn iterate_branches() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+        let key_c =
+            pm_tree_key!("8000000000000000000000000000000000000000000000000000000000000000");
+        let key_d =
+            pm_tree_key!("f000000000000000000000000000000000000000000000000000000000000000");
+
+        let tree = pm_tree! {
+            branch {
+                0x00 => leaf { key_a => 1 },
+                0x01 => leaf { key_b => 2 },
+                0x08 => leaf { key_c => 3 },
+                0x0f => leaf { key_d => 4 },
+            }
+        };
+
+        assert_eq!(
+            &tree.iter().collect::<Vec<_>>(),
+            &[(&key_a, &1), (&key_b, &2), (&key_c, &3), (&key_d, &4)],
+        );
+    }
+
+    #[test]
+    fn iterate_extension() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
+
+        let pm_tree = pm_tree! {
+            extension { "000", branch {
+                0 => leaf { key_a => 0 },
+                1 => leaf { key_b => 1 },
+            } }
+        };
+
+        assert_eq!(
+            &pm_tree.iter().collect::<Vec<_>>(),
+            &[(&key_a, &0), (&key_b, &1)],
+        );
+    }
+
+    #[test]
+    fn iterate_leaf() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let pm_tree = pm_tree! {
+            leaf { key => 42 }
+        };
+
+        assert_eq!(&pm_tree.iter().collect::<Vec<_>>(), &[(&key, &42)]);
+    }
+}
