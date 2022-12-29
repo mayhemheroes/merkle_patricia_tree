@@ -138,16 +138,20 @@ impl<V> ExtensionNode<V> {
         );
 
         match new_child {
-            Some(Node::Branch(branch_node)) => {
+            Some((_, Node::Branch(branch_node))) => {
                 self.child = branch_node;
                 Some(self.into())
             }
-            Some(Node::Extension(extension_node)) => {
+            Some((index, Node::Extension(extension_node))) => {
+                self.prefix.push(match index {
+                    Some(x) => x,
+                    None => unreachable!(),
+                });
                 self.prefix.extend(extension_node.prefix.into_iter());
                 self.child = extension_node.child;
                 Some(self.into())
             }
-            Some(Node::Leaf(leaf_node)) => Some(leaf_node.into()),
+            Some((_, Node::Leaf(leaf_node))) => Some(leaf_node.into()),
             None => None,
         }
     }

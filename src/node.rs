@@ -84,9 +84,9 @@ impl<V> Node<V> {
         F: FnMut(&[u8; 32], &mut V) -> bool,
     {
         match self {
-            Node::Branch(branch_node) => {
-                branch_node.drain_filter(filter, drained_items, current_key_offset)
-            }
+            Node::Branch(branch_node) => branch_node
+                .drain_filter(filter, drained_items, current_key_offset)
+                .map(|(_, x)| x),
             Node::Extension(extension_node) => {
                 extension_node.drain_filter(filter, drained_items, current_key_offset)
             }

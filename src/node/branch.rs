@@ -91,7 +91,7 @@ impl<V> BranchNode<V> {
         filter: &mut F,
         drained_items: &mut Vec<([u8; 32], V)>,
         current_key_offset: usize,
-    ) -> Option<Node<V>>
+    ) -> Option<(Option<u8>, Node<V>)>
     where
         F: FnMut(&[u8; 32], &mut V) -> bool,
     {
@@ -120,8 +120,11 @@ impl<V> BranchNode<V> {
 
         match single_child {
             SingleChild::NoChildren => None,
-            SingleChild::Single(index) => self.choices[index].take().map(|x| *x),
-            SingleChild::Multiple => Some(self.into()),
+            SingleChild::Single(index) => match self.choices[index].take() {
+                Some(x) => Some((Some(index as u8), *x)),
+                None => unreachable!(),
+            },
+            SingleChild::Multiple => Some((None, self.into())),
         }
     }
 }
