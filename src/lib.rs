@@ -16,11 +16,11 @@ mod util;
 ///
 /// For now, keys are always `[u8; 32]`, which represent `KECCAK256` hashes.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
-pub struct PatriciaMerkleTree<V> {
+pub struct PatriciaTree<V> {
     root_node: Option<Node<V>>,
 }
 
-impl<V> PatriciaMerkleTree<V> {
+impl<V> PatriciaTree<V> {
     /// Create an empty tree.
     pub fn new() -> Self {
         Self { root_node: None }
@@ -82,5 +82,133 @@ impl<V> PatriciaMerkleTree<V> {
         } else {
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn new() {
+        let tree = PatriciaTree::<i32>::new();
+        assert_eq!(tree, pm_tree!());
+    }
+
+    #[test]
+    fn is_empty() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+
+        let tree = pm_tree!(<i32>);
+        assert!(tree.is_empty());
+
+        let tree = pm_tree! {
+            leaf { key => 42 }
+        };
+        assert!(!tree.is_empty());
+    }
+
+    #[test]
+    fn get_some() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let tree = pm_tree! {
+            leaf { key => 42 }
+        };
+
+        assert_eq!(tree.get(&key), Some(&42));
+    }
+
+    #[test]
+    fn get_none() {
+        let key_a =
+            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let key_b =
+            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+
+        let tree = pm_tree! {
+            leaf { key_a => 42 }
+        };
+
+        assert_eq!(tree.get(&key_b), None);
+    }
+
+    #[test]
+    fn insert_empty() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let mut tree = pm_tree!(<i32>);
+
+        let old_value = tree.insert(&key, 42);
+
+        assert_eq!(old_value, None);
+        assert_eq!(
+            tree,
+            pm_tree! {
+                leaf { key => 42 }
+            },
+        );
+    }
+
+    #[test]
+    fn insert_passthrough() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let mut tree = pm_tree! {
+            leaf { key => 42 }
+        };
+
+        let old_value = tree.insert(&key, 43);
+
+        assert_eq!(old_value, Some(42));
+        assert_eq!(
+            tree,
+            pm_tree! {
+                leaf { key => 43 }
+            },
+        );
+    }
+
+    #[test]
+    fn remove_empty() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let mut tree = pm_tree!(<i32>);
+
+        let old_value = tree.remove(&key);
+
+        assert_eq!(old_value, None);
+        assert_eq!(tree, pm_tree!());
+    }
+
+    #[test]
+    fn remove_passthrough() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let mut tree = pm_tree! {
+            leaf { key => 42 }
+        };
+
+        let old_value = tree.remove(&key);
+
+        assert_eq!(old_value, Some(42));
+        assert_eq!(tree, pm_tree!());
+    }
+
+    #[test]
+    fn iter() {
+        let tree = pm_tree!(<i32>);
+        assert_eq!(tree.iter(), TreeIterator::new(&tree));
+    }
+
+    #[test]
+    fn drain_filter_empty() {
+        let mut tree = pm_tree!(<i32>);
+        assert_eq!(&tree.drain_filter(|_, _| true), &[]);
+    }
+
+    #[test]
+    fn drain_filter_passthrough() {
+        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
+        let mut tree = pm_tree! {
+            leaf { key => 42 }
+        };
+
+        assert_eq!(&tree.drain_filter(|_, _| true), &[(key, 42)]);
     }
 }

@@ -73,19 +73,19 @@ macro_rules! pm_tree_key {
 macro_rules! pm_tree {
     // Create an empty tree (with deduced value type).
     () => {
-        $crate::PatriciaMerkleTree {
+        $crate::PatriciaTree {
             root_node: None,
         }
     };
     // Create an empty tree (with explicit value type).
     ( < $t:ty > ) => {
-        $crate::PatriciaMerkleTree::<$t> {
+        $crate::PatriciaTree::<$t> {
             root_node: None,
         }
     };
     // Create a new tree.
     ( $type:ident { $( $root_node:tt )* } ) => {
-        $crate::PatriciaMerkleTree {
+        $crate::PatriciaTree {
             root_node: Some($crate::pm_tree_branch!($type { $( $root_node )* }).into()),
         }
     };

@@ -1,6 +1,6 @@
 use crate::{
     node::{BranchNode, Node},
-    PatriciaMerkleTree,
+    PatriciaTree,
 };
 
 /// Iterator state (for each node, like a stack).
@@ -13,13 +13,14 @@ struct NodeState<'a, V> {
     state: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeIterator<'a, V> {
-    tree: Option<&'a PatriciaMerkleTree<V>>,
+    tree: Option<&'a PatriciaTree<V>>,
     state: Vec<NodeState<'a, V>>,
 }
 
 impl<'a, V> TreeIterator<'a, V> {
-    pub(crate) fn new(tree: &'a PatriciaMerkleTree<V>) -> Self {
+    pub(crate) fn new(tree: &'a PatriciaTree<V>) -> Self {
         Self {
             tree: Some(tree),
             state: vec![],
