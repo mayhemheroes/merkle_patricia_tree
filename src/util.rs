@@ -46,7 +46,7 @@ impl<'a> Iterator for KeySegmentIterator<'a> {
     }
 }
 
-/// Create a new Patricia Merkle tree key.
+/// Create a new Patricia tree key.
 #[cfg(test)]
 #[macro_export]
 macro_rules! pm_tree_key {
@@ -67,7 +67,7 @@ macro_rules! pm_tree_key {
     }};
 }
 
-/// Create a new Patricia Merkle Tree.
+/// Create a new Patricia Tree.
 #[cfg(test)]
 #[macro_export]
 macro_rules! pm_tree {

@@ -1,4 +1,4 @@
-//! # Patricia Merkle Tree
+//! # Patricia Tree
 //!
 //! This crate implements a Patricia tree. Its implementation is kept as simple
 //! as possible to allow for maximum flexibility.
@@ -12,7 +12,7 @@ mod iter;
 mod node;
 mod util;
 
-/// Patricia Merkle Tree implementation.
+/// Patricia Tree implementation.
 ///
 /// For now, keys are always `[u8; 32]`, which represent `KECCAK256` hashes.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
