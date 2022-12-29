@@ -65,7 +65,10 @@ impl<V> Node<V> {
         current_key_offset: usize,
     ) -> (Option<Self>, Option<V>) {
         match self {
-            Node::Branch(branch_node) => branch_node.remove(key, current_key_offset),
+            Node::Branch(branch_node) => match branch_node.remove(key, current_key_offset) {
+                (Some((_, x)), y) => (Some(x), y),
+                (None, x) => (None, x),
+            },
             Node::Extension(extension_node) => extension_node.remove(key, current_key_offset),
             Node::Leaf(leaf_node) => leaf_node.remove(key),
         }

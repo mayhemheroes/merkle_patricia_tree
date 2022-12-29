@@ -44,11 +44,12 @@ impl<V> BranchNode<V> {
         (self, old_value)
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn remove(
         mut self,
         key: &[u8; 32],
         current_key_offset: usize,
-    ) -> (Option<Node<V>>, Option<V>) {
+    ) -> (Option<(Option<u8>, Node<V>)>, Option<V>) {
         let index = KeySegmentIterator::nth(key, current_key_offset) as usize;
         match self.choices[index].take() {
             Some(mut child_node) => {
@@ -59,21 +60,21 @@ impl<V> BranchNode<V> {
                 }
 
                 let mut single_child = None;
-                for child in self.choices.iter_mut() {
+                for (index, child) in self.choices.iter_mut().enumerate() {
                     if child.is_none() {
                         continue;
                     }
 
                     match single_child {
-                        Some(_) => return (Some(self.into()), old_value),
-                        None => single_child = Some(child),
+                        Some(_) => return (Some((None, self.into())), old_value),
+                        None => single_child = Some((index, child)),
                     }
                 }
 
                 (
                     match single_child {
-                        Some(x) => match x.take() {
-                            Some(x) => Some(*x),
+                        Some((index, x)) => match x.take() {
+                            Some(x) => Some((Some(index as u8), *x)),
                             None => unreachable!(),
                         },
                         None => None,
@@ -81,7 +82,7 @@ impl<V> BranchNode<V> {
                     old_value,
                 )
             }
-            None => (Some(self.into()), None),
+            None => (Some((None, self.into())), None),
         }
     }
 
