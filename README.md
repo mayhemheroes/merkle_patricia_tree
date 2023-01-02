@@ -12,7 +12,7 @@ single nibble. It does not contain neither storage nor the hashing function.
 
 Benchmarks are provided for the following use cases:
 
-  - > TODO: Retrieval of non-existant nodes.
+  - Retrieval of non-existant nodes.
   - Retrieval of existing nodes.
   - Insertion of new nodes.
   - Overwriting nodes.
