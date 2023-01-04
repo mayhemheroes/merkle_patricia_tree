@@ -1,3 +1,5 @@
+WIP README. WILL BE UPDATED IN THE FOLLOWING DAYS
+
 # Patricia Tree implementation in Rust
 
 This crate contains an implementation of a Patricia Tree.
