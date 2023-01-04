@@ -1,4 +1,5 @@
-WIP README. WILL BE UPDATED IN THE FOLLOWING DAYS
+## **WIP README**. 
+Will be updated in the following days.
 
 # Patricia Tree implementation in Rust
 
