@@ -57,7 +57,7 @@ It contains 2 elements:
 
 It contains 2 elements:
 - The encoded path.
-- A key or path used for the next db lookup ().
+- A key or path for the next lookup.
 
 This node is allows the tree to be more compact, imagine we have a path that ultimately can only go 1 way, because it has no diverging paths,
 adding X nodes instead of 1 representing that would be a waste of space, this fixes that.
