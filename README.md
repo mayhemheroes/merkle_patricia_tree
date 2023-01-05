@@ -1,4 +1,4 @@
-## **WIP README**. 
+# **WIP README**. 
 
 We will be updating the README in the following days.
 
@@ -12,7 +12,7 @@ single nibble. It does not contain neither storage nor the hashing function.
 
 > TODO: Storage implementation example.
 
-## Benchmarking
+# Benchmarking
 
 Benchmarks are provided for the following use cases:
 
@@ -25,7 +25,7 @@ Benchmarks are provided for the following use cases:
 
 Every use case is tested with different tree sizes, ranging from 1k to 1M.
 
-## What is a patricia merke tree
+# What is a patricia merke tree
 
 PATRICIA is an acronym which means:
 
@@ -41,13 +41,13 @@ The key or path is converted to bytes, and then each nibble of each byte is used
 
 It is composed of 3 different types of nodes:
 
-### The branch node
+## The branch node
 
 It contains a 17 element array:
 - The 16 first elements cover every representable value of a nibble (2^4 = 16)
 - The value in case the path is fully traversed.
 
-### The leaf node
+## The leaf node
 
 It contains 2 elements:
 - The encoded path.
@@ -59,13 +59,13 @@ It contains 2 elements:
 - The encoded path.
 - A key or path for the next lookup.
 
-This node is allows the tree to be more compact, imagine we have a path that ultimately can only go 1 way, because it has no diverging paths,
+This node allows the tree to be more compact, imagine we have a path that ultimately can only go 1 way, because it has no diverging paths,
 adding X nodes instead of 1 representing that would be a waste of space, this fixes that.
 
 For example, imagine we have the keys "abcdx" and "abcdy", instead of adding 10 nodes (1 for each nibble in each character), we create a single node representing the path "abcd", thus compressing the tree.
 
 
-### Solving the ambiguity
+## Solving the ambiguity
 
 Since traversing a path is done through it's nibbles, when doing so, the remaining partial path may have an odd number of nibbles left, this
 introduces an ambiguity that comes from storing a nibble as a byte:
@@ -82,10 +82,10 @@ Thats why a flag is introduced to differenciate between an odd or even remaining
 TODO: put the flag table
 
 
-# Terms
+## Terms
 - **[nibble](https://en.wikipedia.org/wiki/Nibble)**: 4bits, half a byte, a single hex digit.
 
-# Useful links
+## Useful links
 
 - [Patricia tree on NIST](https://xlinux.nist.gov/dads/HTML/patriciatree.html)
 - [Paper by Donald R. Morrison](https://dl.acm.org/doi/10.1145/321479.321481)
