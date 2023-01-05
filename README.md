@@ -37,7 +37,7 @@ Practical Algorithm to Retrieve Information Coded in Alphanumeric
 
 In essence, a patricia tree stores a value for the given key (also named **path**).
 
-The key or path is converted to bytes, we u
+The key or path is converted to bytes, and then each nibble of each byte is used to traverse the tree.
 
 It is composed of 3 different types of nodes:
 
