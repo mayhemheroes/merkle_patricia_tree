@@ -79,8 +79,16 @@ When representing both as a byte, they have the same value `1`.
 
 Thats why a flag is introduced to differenciate between an odd or even remaining partial path:
 
-TODO: put the flag table
+| hex char | bits | node type | path length |
+|----------|------|-----------|-------------|
+| 0        | 0000 | extension | even        |
+| 1        | 0001 | extension | odd         |
+| 2        | 0010 | leaf      | even        |
+| 3        | 0011 | leaf      | odd         |
 
+```
+[flag] + paths
+```
 
 ## Terms
 - **[nibble](https://en.wikipedia.org/wiki/Nibble)**: 4bits, half a byte, a single hex digit.
