@@ -87,7 +87,7 @@ Thats why a flag is introduced to differenciate between an odd or even remaining
 | 3        | 0011 | leaf      | odd         |
 
 ```
-[flag] + paths
+[flag] + path
 ```
 
 ## Terms
