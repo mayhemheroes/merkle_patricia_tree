@@ -6,7 +6,22 @@ Its structure is implemented to match Ethereum's [Patricia Merkle Trees](https:/
 
 > TODO: Storage implementation example.
 
+## Building
+
+```
+make build
+```
+
+## Testing
+```
+make test
+```
+
 ## Benchmarking
+
+```
+make bench
+```
 
 Benchmarks are provided for the following use cases:
 
