@@ -1,4 +1,6 @@
 # Patricia Merkle Tree implementation in Rust
+[![Rust](https://github.com/lambdaclass/merkle_patricia_tree/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/lambdaclass/merkle_patricia_tree/actions/workflows/rust.yml)
+[![codecov](https://codecov.io/gh/lambdaclass/merkle_patricia_tree/branch/main/graph/badge.svg?token=4EJ3CBOB0E)](https://codecov.io/gh/lambdaclass/merkle_patricia_tree)
 
 This crate contains an implementation of a Patricia Tree.
 
