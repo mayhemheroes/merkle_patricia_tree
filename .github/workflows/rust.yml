@@ -22,9 +22,17 @@ jobs:
     - uses: actions/checkout@v3
     - name: Format
       run: cargo fmt --all -- --check
+    - name: Install deps
+      run: make deps
     - name: Build
       run: make build
     - name: Run clippy
       run: make clippy
     - name: Run tests
       run: make test
+    - name: Coverage
+      run: make coverage
+    - name: Upload coverage to codecov.io
+      uses: codecov/codecov-action@v3
+      with:
+        fail_ci_if_error:     true
