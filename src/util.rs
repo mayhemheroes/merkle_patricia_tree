@@ -1,128 +1,178 @@
-pub struct KeySegmentIterator<'a> {
-    data: &'a [u8; 32],
-    pos: usize,
-    half: bool,
+use crate::Nibble;
+use digest::{Digest, Output};
+use std::{
+    io::{Cursor, Write},
+    iter::Peekable,
+};
+
+pub fn write_slice(value: &[u8], mut target: impl Write) {
+    if value.len() <= 55 {
+        target.write_all(&[0x80 + value.len() as u8]).unwrap();
+    } else {
+        let len_bytes = value.len().to_be_bytes();
+        let write_offset = len_bytes.iter().copied().take_while(|&x| x == 0).count();
+        target
+            .write_all(&[0xB7 + (len_bytes.len() - write_offset) as u8])
+            .unwrap();
+        target.write_all(&len_bytes[write_offset..]).unwrap();
+    }
+
+    target.write_all(value).unwrap();
 }
 
-impl<'a> KeySegmentIterator<'a> {
-    /// Create a new nibble iterator.
-    pub fn new(data: &'a [u8; 32]) -> Self {
+pub fn write_list(payload: &[u8], mut target: impl Write) {
+    if payload.len() <= 55 {
+        target.write_all(&[0xC0 + payload.len() as u8]).unwrap();
+    } else {
+        let len_bytes = payload.len().to_be_bytes();
+        let write_offset = len_bytes.iter().copied().take_while(|&x| x == 0).count();
+        target
+            .write_all(&[0xF7 + (len_bytes.len() - write_offset) as u8])
+            .unwrap();
+        target.write_all(&len_bytes[write_offset..]).unwrap();
+    }
+
+    target.write_all(payload).unwrap();
+}
+
+// TODO: Improve performance.
+pub fn encode_path(nibbles: &[Nibble]) -> Vec<u8> {
+    let flag = 0x20;
+    if nibbles.len() % 2 == 1 {
+        let flag = flag | 0x10;
+
+        let mut target = Vec::new();
+        target.push(flag | (nibbles[0] as u8));
+        target.extend(
+            nibbles[1..]
+                .chunks(2)
+                .map(|x| (u8::from(x[0]) << 4) | u8::from(x[1])),
+        );
+
+        target
+    } else {
+        Vec::from_iter(
+            nibbles
+                .chunks(2)
+                .map(|x| (u8::from(x[0]) << 4) | u8::from(x[1])),
+        )
+    }
+}
+
+pub struct DigestBuf<H>
+where
+    H: Digest,
+{
+    hasher: H,
+    buffer: Cursor<[u8; 256]>,
+    updated: bool,
+}
+
+impl<H> DigestBuf<H>
+where
+    H: Digest,
+{
+    pub fn new() -> Self {
         Self {
-            data,
-            pos: 0,
-            half: false,
+            hasher: H::new(),
+            buffer: Cursor::new([0u8; 256]),
+            updated: false,
         }
     }
 
-    /// Shortcut to the `nth()` method of a new iterator.
-    ///
-    /// Panics when n is out of the range [0, 64).
-    pub fn nth(data: &'a [u8; 32], n: usize) -> u8 {
-        KeySegmentIterator::new(data)
-            .nth(n)
-            .expect("Key index out of range, value should be in [0, 64).")
+    pub fn extract_or_finalize(mut self, target: &mut Output<H>) -> usize {
+        if self.updated || self.buffer.position() >= 32 {
+            self.flush_update();
+            self.hasher.finalize_into(target);
+            32
+        } else {
+            let pos = self.buffer.position() as usize;
+            target[..pos].copy_from_slice(&self.buffer.get_ref()[..pos]);
+            pos
+        }
+    }
+
+    pub fn finalize(mut self) -> Output<H> {
+        self.flush_update();
+        self.hasher.finalize()
+    }
+
+    fn flush_update(&mut self) {
+        let buffer = &self.buffer.get_ref()[..self.buffer.position() as usize];
+
+        self.hasher.update(buffer);
+        self.buffer.set_position(0);
+        self.updated = true;
     }
 }
 
-impl<'a> Iterator for KeySegmentIterator<'a> {
-    type Item = u8;
+impl<H> Write for DigestBuf<H>
+where
+    H: Digest,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut pos = 0;
+        while pos != buf.len() {
+            pos += self.buffer.write(&buf[pos..])?;
+            if self.buffer.position() as usize == self.buffer.get_ref().len() {
+                self.hasher.update(self.buffer.get_ref());
+                self.buffer.set_position(0);
+                self.updated = true;
+            }
+        }
+
+        Ok(pos)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub struct Offseted<I>(Peekable<I>, usize)
+where
+    I: Iterator;
+
+impl<I> Offseted<I>
+where
+    I: Iterator,
+{
+    pub fn new(inner: I) -> Self {
+        Self(inner.peekable(), 0)
+    }
+
+    pub fn offset(&self) -> usize {
+        self.1
+    }
+
+    pub fn peek(&mut self) -> Option<&I::Item> {
+        self.0.peek()
+    }
+
+    pub fn count_equals<I2>(&mut self, rhs: &mut Peekable<I2>) -> usize
+    where
+        I2: Iterator,
+        I2::Item: PartialEq<I::Item>,
+    {
+        let mut count = 0;
+        while self.0.next_if(|x| rhs.next_if_eq(x).is_some()).is_some() {
+            count += 1;
+        }
+        self.1 += count;
+        count
+    }
+}
+
+impl<I> Iterator for Offseted<I>
+where
+    I: Iterator,
+{
+    type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= 32 {
-            return None;
-        }
-
-        let mut value = self.data[self.pos];
-
-        if self.half {
-            self.pos += 1;
-            value &= 0xF;
-        } else {
-            value >>= 4;
-        }
-
-        self.half = !self.half;
-        Some(value)
-    }
-}
-
-/// Create a new Patricia tree key.
-#[cfg(test)]
-#[macro_export]
-macro_rules! pm_tree_key {
-    ( $key:literal ) => {{
-        assert_eq!($key.len(), 64, "Tree keys must be 64 nibbles in length.");
-        let key: [u8; 32] = $key
-            .as_bytes()
-            .chunks_exact(2)
-            .map(|x| {
-                u8::from_str_radix(std::str::from_utf8(x).unwrap(), 16)
-                    .expect("Key contains non-hexadecimal characters.")
-            })
-            .collect::<Vec<u8>>()
-            .try_into()
-            .unwrap();
-
-        key
-    }};
-}
-
-/// Create a new Patricia Tree.
-#[cfg(test)]
-#[macro_export]
-macro_rules! pm_tree {
-    // Create an empty tree (with deduced value type).
-    () => {
-        $crate::PatriciaTree {
-            root_node: None,
-        }
-    };
-    // Create an empty tree (with explicit value type).
-    ( < $t:ty > ) => {
-        $crate::PatriciaTree::<$t> {
-            root_node: None,
-        }
-    };
-    // Create a new tree.
-    ( $type:ident { $( $root_node:tt )* } ) => {
-        $crate::PatriciaTree {
-            root_node: Some($crate::pm_tree_branch!($type { $( $root_node )* }).into()),
-        }
-    };
-}
-
-#[cfg(test)]
-#[macro_export]
-macro_rules! pm_tree_branch {
-    // Internal.
-    ( branch { $( $key:literal => $type:ident { $( $node:tt )* } ),* $(,)? } ) => {
-        $crate::node::BranchNode::from_choices({
-            let mut choices: [Option<Box<Node<_>>>; 16] = Default::default();
-            $( choices[$key] = Some(Box::new($crate::pm_tree_branch!($type { $( $node )* }).into())); )*
-            choices
+        self.0.next().map(|x| {
+            self.1 += 1;
+            x
         })
-    };
-    // Internal.
-    ( extension { $prefix:literal, $type:ident { $( $node:tt )* } } ) => {
-        $crate::node::ExtensionNode::from_prefix_child(
-            {
-                let value = $prefix
-                    .as_bytes()
-                    .into_iter()
-                    .map(|x| {
-                        (*x as char)
-                            .to_digit(16)
-                            .expect("Prefix contains non-hexadecimal characters.") as u8
-                    })
-                    .collect::<Vec<u8>>();
-
-                value
-            },
-            $crate::pm_tree_branch!($type { $( $node )* }).into(),
-        )
-    };
-    // Internal.
-    ( leaf { $key:expr => $value:expr } ) => {
-        $crate::node::LeafNode::from_key_value($key, $value)
-    };
+    }
 }

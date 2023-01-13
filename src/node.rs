@@ -1,460 +1,152 @@
-pub use self::{branch::BranchNode, extension::ExtensionNode, leaf::LeafNode};
-use crate::util::KeySegmentIterator;
+use crate::{
+    nibble::Nibble,
+    nodes::{BranchNode, ExtensionNode, LeafNode},
+    util::Offseted,
+    NodesStorage, TreePath, ValuesStorage,
+};
+use digest::Digest;
 
-mod branch;
-mod extension;
-mod leaf;
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Node<V> {
-    Branch(BranchNode<V>),
-    Extension(ExtensionNode<V>),
-    Leaf(LeafNode<V>),
+/// A node within the Patricia Merkle tree.
+///
+/// Notes:
+///   - The `Branch` variant havs an optional value.
+///   - Extension nodes are only used when followed by a branch, and never with other extensions
+///     (they are combined) or leaves (they are removed).
+#[derive(Clone, Debug)]
+pub enum Node<P, V, H>
+where
+    P: TreePath,
+    V: AsRef<[u8]>,
+    H: Digest,
+{
+    Branch(BranchNode<P, V, H>),
+    Extension(ExtensionNode<P, V, H>),
+    Leaf(LeafNode<P, V, H>),
 }
 
-impl<V> Node<V> {
-    pub fn get(&self, key: &[u8; 32], current_key_offset: usize) -> Option<&V> {
-        match self {
-            Node::Branch(branch_node) => return branch_node.get(key, current_key_offset),
-            Node::Extension(extension_node) => {
-                if KeySegmentIterator::new(key)
-                    .skip(current_key_offset)
-                    .zip(extension_node.prefix().iter().copied())
-                    .all(|(a, b)| a == b)
-                {
-                    return extension_node
-                        .child()
-                        .get(key, current_key_offset + extension_node.prefix().len());
-                }
-            }
-            Node::Leaf(leaf_node) => {
-                if leaf_node.key() == key {
-                    return Some(leaf_node.value());
-                }
-            }
-        }
-
-        None
-    }
-
-    pub(crate) fn insert(
-        self,
-        key: &[u8; 32],
-        value: V,
-        current_key_offset: usize,
-    ) -> (Self, Option<V>) {
-        match self {
-            Node::Branch(branch_node) => {
-                let (new_node, old_value) = branch_node.insert(key, value, current_key_offset);
-                (new_node.into(), old_value)
-            }
-            Node::Extension(extension_node) => {
-                let (new_node, old_value) = extension_node.insert(key, value, current_key_offset);
-                (new_node, old_value)
-            }
-            Node::Leaf(leaf_node) => {
-                let (new_node, old_value) = leaf_node.insert(key, value, current_key_offset);
-                (new_node, old_value)
-            }
-        }
-    }
-
-    pub(crate) fn remove(
-        self,
-        key: &[u8; 32],
-        current_key_offset: usize,
-    ) -> (Option<Self>, Option<V>) {
-        match self {
-            Node::Branch(branch_node) => match branch_node.remove(key, current_key_offset) {
-                (Some((_, x)), y) => (Some(x), y),
-                (None, x) => (None, x),
-            },
-            Node::Extension(extension_node) => extension_node.remove(key, current_key_offset),
-            Node::Leaf(leaf_node) => leaf_node.remove(key),
-        }
-    }
-
-    pub(crate) fn drain_filter<F>(
-        self,
-        filter: &mut F,
-        drained_items: &mut Vec<([u8; 32], V)>,
-        current_key_offset: usize,
-    ) -> Option<Self>
+impl<P, V, H> Node<P, V, H>
+where
+    P: TreePath,
+    V: AsRef<[u8]>,
+    H: Digest,
+{
+    pub fn get<'a, I>(
+        &'a self,
+        nodes: &'a NodesStorage<P, V, H>,
+        values: &'a ValuesStorage<P, V>,
+        path_iter: Offseted<I>,
+    ) -> Option<&V>
     where
-        F: FnMut(&[u8; 32], &mut V) -> bool,
+        I: Iterator<Item = Nibble>,
     {
         match self {
-            Node::Branch(branch_node) => branch_node
-                .drain_filter(filter, drained_items, current_key_offset)
-                .map(|(_, x)| x),
+            Node::Branch(branch_node) => branch_node.get(nodes, values, path_iter),
+            Node::Extension(extension_node) => extension_node.get(nodes, values, path_iter),
+            Node::Leaf(leaf_node) => leaf_node.get(nodes, values, path_iter),
+        }
+    }
+
+    pub fn insert<I>(
+        self,
+        nodes: &mut NodesStorage<P, V, H>,
+        values: &mut ValuesStorage<P, V>,
+        path_iter: Offseted<I>,
+    ) -> (Self, InsertAction)
+    where
+        I: Iterator<Item = Nibble>,
+    {
+        match self {
+            Node::Branch(branch_node) => branch_node.insert(nodes, values, path_iter),
+            Node::Extension(extension_node) => extension_node.insert(nodes, values, path_iter),
+            Node::Leaf(leaf_node) => leaf_node.insert(nodes, values, path_iter),
+        }
+    }
+
+    pub fn remove<I>(
+        self,
+        nodes: &mut NodesStorage<P, V, H>,
+        values: &mut ValuesStorage<P, V>,
+        path_iter: Offseted<I>,
+    ) -> (Option<Self>, Option<V>)
+    where
+        I: Iterator<Item = Nibble>,
+    {
+        match self {
+            Node::Branch(branch_node) => branch_node.remove(nodes, values, path_iter),
+            Node::Extension(extension_node) => extension_node.remove(nodes, values, path_iter),
+            Node::Leaf(leaf_node) => leaf_node.remove(nodes, values, path_iter),
+        }
+    }
+
+    pub fn compute_hash(
+        &mut self,
+        nodes: &mut NodesStorage<P, V, H>,
+        values: &ValuesStorage<P, V>,
+        key_offset: usize,
+    ) -> &[u8] {
+        match self {
+            Node::Branch(branch_node) => branch_node.compute_hash(nodes, values, key_offset),
             Node::Extension(extension_node) => {
-                extension_node.drain_filter(filter, drained_items, current_key_offset)
+                extension_node.compute_hash(nodes, values, key_offset)
             }
-            Node::Leaf(leaf_node) => leaf_node.drain_filter(filter, drained_items),
+            Node::Leaf(leaf_node) => leaf_node.compute_hash(nodes, values, key_offset),
         }
     }
 }
 
-impl<V> From<BranchNode<V>> for Node<V> {
-    fn from(value: BranchNode<V>) -> Self {
+impl<P, V, H> From<BranchNode<P, V, H>> for Node<P, V, H>
+where
+    P: TreePath,
+    V: AsRef<[u8]>,
+    H: Digest,
+{
+    fn from(value: BranchNode<P, V, H>) -> Self {
         Self::Branch(value)
     }
 }
 
-impl<V> From<ExtensionNode<V>> for Node<V> {
-    fn from(value: ExtensionNode<V>) -> Self {
+impl<P, V, H> From<ExtensionNode<P, V, H>> for Node<P, V, H>
+where
+    P: TreePath,
+    V: AsRef<[u8]>,
+    H: Digest,
+{
+    fn from(value: ExtensionNode<P, V, H>) -> Self {
         Self::Extension(value)
     }
 }
 
-impl<V> From<LeafNode<V>> for Node<V> {
-    fn from(value: LeafNode<V>) -> Self {
+impl<P, V, H> From<LeafNode<P, V, H>> for Node<P, V, H>
+where
+    P: TreePath,
+    V: AsRef<[u8]>,
+    H: Digest,
+{
+    fn from(value: LeafNode<P, V, H>) -> Self {
         Self::Leaf(value)
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::{pm_tree_branch, pm_tree_key};
+/// Returned by .insert() to update the values' storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InsertAction {
+    // /// No action is required.
+    // Nothing,
+    /// An insertion is required. The argument points to a node.
+    Insert(usize),
+    /// A replacement is required. The argument points to a value.
+    Replace(usize),
 
-    #[test]
-    fn get_branch() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
+    /// Special insert where its node_ref is not known.
+    InsertSelf,
+}
 
-        let node: Node<_> = pm_tree_branch! {
-            branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            }
+impl InsertAction {
+    /// Replace `Self::InsertSelf` with `Self::Insert(node_ref)`.
+    pub fn quantize_self(self, node_ref: usize) -> Self {
+        match self {
+            Self::InsertSelf => Self::Insert(node_ref),
+            _ => self,
         }
-        .into();
-
-        assert_eq!(node.get(&key_a, 0), Some(&42));
-        assert_eq!(node.get(&key_b, 0), Some(&43));
-    }
-
-    #[test]
-    fn get_extension() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            extension { "000", branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            } }
-        }
-        .into();
-
-        assert_eq!(node.get(&key_a, 0), Some(&42));
-        assert_eq!(node.get(&key_b, 0), Some(&43));
-    }
-
-    #[test]
-    fn get_leaf() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let node: Node<_> = pm_tree_branch! {
-            leaf { key => 42 }
-        }
-        .into();
-
-        assert_eq!(node.get(&key, 0), Some(&42));
-    }
-
-    #[test]
-    fn get_none() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            leaf { key_a => 42 }
-        }
-        .into();
-
-        assert_eq!(node.get(&key_b, 0), None);
-    }
-
-    #[test]
-    fn insert_branch() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            }
-        }
-        .into();
-
-        let (node, old_value) = node.insert(&key_b, 44, 0);
-
-        assert_eq!(old_value, Some(43));
-        assert_eq!(
-            node,
-            pm_tree_branch! {
-                branch {
-                    0 => leaf { key_a => 42 },
-                    1 => leaf { key_b => 44 },
-                }
-            }
-            .into(),
-        );
-    }
-
-    #[test]
-    fn insert_extension() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            extension { "000", branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            } }
-        }
-        .into();
-
-        let (node, old_value) = node.insert(&key_b, 44, 0);
-
-        assert_eq!(old_value, Some(43));
-        assert_eq!(
-            node,
-            pm_tree_branch! {
-                extension { "000", branch {
-                    0 => leaf { key_a => 42 },
-                    1 => leaf { key_b => 44 },
-                } }
-            }
-            .into(),
-        );
-    }
-
-    #[test]
-    fn insert_leaf() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let node: Node<_> = pm_tree_branch! {
-            leaf { key => 42 }
-        }
-        .into();
-
-        let (node, old_value) = node.insert(&key, 43, 0);
-
-        assert_eq!(old_value, Some(42));
-        assert_eq!(
-            node,
-            pm_tree_branch! {
-                leaf { key => 43 }
-            }
-            .into(),
-        );
-    }
-
-    #[test]
-    fn remove_branch() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            }
-        }
-        .into();
-
-        let (node, old_value) = node.remove(&key_b, 0);
-
-        assert_eq!(old_value, Some(43));
-        assert_eq!(
-            node,
-            Some(
-                pm_tree_branch! {
-                    leaf { key_a => 42 }
-                }
-                .into()
-            ),
-        );
-    }
-
-    #[test]
-    fn remove_branch_all() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let node: Node<_> = pm_tree_branch! {
-            // Note: This construct is invalid and can't be obtained using the public API: branches
-            //   always have more than one branch, otherwise they get removed.
-            branch {
-                0 => leaf { key => 42 },
-            }
-        }
-        .into();
-
-        let (node, old_value) = node.remove(&key, 0);
-
-        assert_eq!(old_value, Some(42));
-        assert_eq!(node, None);
-    }
-
-    #[test]
-    fn remove_extension() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            extension { "000", branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            } }
-        }
-        .into();
-
-        let (node, old_value) = node.remove(&key_b, 0);
-
-        assert_eq!(old_value, Some(43));
-        assert_eq!(
-            node,
-            Some(
-                pm_tree_branch! {
-                    leaf { key_a => 42 }
-                }
-                .into()
-            ),
-        );
-    }
-
-    #[test]
-    fn remove_leaf() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let node: Node<_> = pm_tree_branch! {
-            leaf { key => 42 }
-        }
-        .into();
-
-        let (node, old_value) = node.remove(&key, 0);
-
-        assert_eq!(old_value, Some(42));
-        assert_eq!(node, None);
-    }
-
-    #[test]
-    fn drain_filter_branch() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            }
-        }
-        .into();
-
-        let mut drained_items = Vec::new();
-        let node = node.drain_filter(&mut |_, _| true, &mut drained_items, 0);
-
-        assert_eq!(node, None);
-        assert_eq!(&drained_items, &[(key_a, 42), (key_b, 43)]);
-    }
-
-    #[test]
-    fn drain_filter_extension() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let node: Node<_> = pm_tree_branch! {
-            extension { "000", branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            } }
-        }
-        .into();
-
-        let mut drained_items = Vec::new();
-        let node = node.drain_filter(&mut |_, _| true, &mut drained_items, 0);
-
-        assert_eq!(node, None);
-        assert_eq!(&drained_items, &[(key_a, 42), (key_b, 43)]);
-    }
-
-    #[test]
-    fn drain_filter_leaf() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let node: Node<_> = pm_tree_branch! {
-            leaf { key => 42 }
-        }
-        .into();
-
-        let mut drained_items = Vec::new();
-        let node = node.drain_filter(&mut |_, _| true, &mut drained_items, 0);
-
-        assert_eq!(node, None);
-        assert_eq!(&drained_items, &[(key, 42)]);
-    }
-
-    #[test]
-    fn from_branch_node() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("1000000000000000000000000000000000000000000000000000000000000000");
-
-        let specific_node = pm_tree_branch! {
-            branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            }
-        };
-
-        let node: Node<_> = specific_node.clone().into();
-        assert_eq!(node, Node::Branch(specific_node));
-    }
-
-    #[test]
-    fn from_extension_node() {
-        let key_a =
-            pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let key_b =
-            pm_tree_key!("0001000000000000000000000000000000000000000000000000000000000000");
-
-        let specific_node = pm_tree_branch! {
-            extension { "000", branch {
-                0 => leaf { key_a => 42 },
-                1 => leaf { key_b => 43 },
-            } }
-        };
-
-        let node: Node<_> = specific_node.clone().into();
-        assert_eq!(node, Node::Extension(specific_node));
-    }
-
-    #[test]
-    fn from_leaf_node() {
-        let key = pm_tree_key!("0000000000000000000000000000000000000000000000000000000000000000");
-        let specific_node = pm_tree_branch! {
-            leaf { key => 42 }
-        };
-
-        let node: Node<_> = specific_node.clone().into();
-        assert_eq!(node, Node::Leaf(specific_node));
     }
 }
