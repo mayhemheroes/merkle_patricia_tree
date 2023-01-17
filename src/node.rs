@@ -1,8 +1,7 @@
 use crate::{
-    nibble::Nibble,
+    nibble::NibbleSlice,
     nodes::{BranchNode, ExtensionNode, LeafNode},
-    util::Offseted,
-    NodesStorage, TreePath, ValuesStorage,
+    NodeRef, NodesStorage, ValueRef, ValuesStorage,
 };
 use digest::Digest;
 
@@ -15,7 +14,7 @@ use digest::Digest;
 #[derive(Clone, Debug)]
 pub enum Node<P, V, H>
 where
-    P: TreePath,
+    P: AsRef<[u8]>,
     V: AsRef<[u8]>,
     H: Digest,
 {
@@ -26,55 +25,33 @@ where
 
 impl<P, V, H> Node<P, V, H>
 where
-    P: TreePath,
+    P: AsRef<[u8]>,
     V: AsRef<[u8]>,
     H: Digest,
 {
-    pub fn get<'a, I>(
+    pub fn get<'a>(
         &'a self,
         nodes: &'a NodesStorage<P, V, H>,
         values: &'a ValuesStorage<P, V>,
-        path_iter: Offseted<I>,
-    ) -> Option<&V>
-    where
-        I: Iterator<Item = Nibble>,
-    {
+        path: NibbleSlice,
+    ) -> Option<&V> {
         match self {
-            Node::Branch(branch_node) => branch_node.get(nodes, values, path_iter),
-            Node::Extension(extension_node) => extension_node.get(nodes, values, path_iter),
-            Node::Leaf(leaf_node) => leaf_node.get(nodes, values, path_iter),
+            Node::Branch(branch_node) => branch_node.get(nodes, values, path),
+            Node::Extension(extension_node) => extension_node.get(nodes, values, path),
+            Node::Leaf(leaf_node) => leaf_node.get(nodes, values, path),
         }
     }
 
-    pub fn insert<I>(
+    pub(crate) fn insert(
         self,
         nodes: &mut NodesStorage<P, V, H>,
         values: &mut ValuesStorage<P, V>,
-        path_iter: Offseted<I>,
-    ) -> (Self, InsertAction)
-    where
-        I: Iterator<Item = Nibble>,
-    {
+        path: NibbleSlice,
+    ) -> (Self, InsertAction) {
         match self {
-            Node::Branch(branch_node) => branch_node.insert(nodes, values, path_iter),
-            Node::Extension(extension_node) => extension_node.insert(nodes, values, path_iter),
-            Node::Leaf(leaf_node) => leaf_node.insert(nodes, values, path_iter),
-        }
-    }
-
-    pub fn remove<I>(
-        self,
-        nodes: &mut NodesStorage<P, V, H>,
-        values: &mut ValuesStorage<P, V>,
-        path_iter: Offseted<I>,
-    ) -> (Option<Self>, Option<V>)
-    where
-        I: Iterator<Item = Nibble>,
-    {
-        match self {
-            Node::Branch(branch_node) => branch_node.remove(nodes, values, path_iter),
-            Node::Extension(extension_node) => extension_node.remove(nodes, values, path_iter),
-            Node::Leaf(leaf_node) => leaf_node.remove(nodes, values, path_iter),
+            Node::Branch(branch_node) => branch_node.insert(nodes, values, path),
+            Node::Extension(extension_node) => extension_node.insert(nodes, values, path),
+            Node::Leaf(leaf_node) => leaf_node.insert(nodes, values, path),
         }
     }
 
@@ -96,7 +73,7 @@ where
 
 impl<P, V, H> From<BranchNode<P, V, H>> for Node<P, V, H>
 where
-    P: TreePath,
+    P: AsRef<[u8]>,
     V: AsRef<[u8]>,
     H: Digest,
 {
@@ -107,7 +84,7 @@ where
 
 impl<P, V, H> From<ExtensionNode<P, V, H>> for Node<P, V, H>
 where
-    P: TreePath,
+    P: AsRef<[u8]>,
     V: AsRef<[u8]>,
     H: Digest,
 {
@@ -118,7 +95,7 @@ where
 
 impl<P, V, H> From<LeafNode<P, V, H>> for Node<P, V, H>
 where
-    P: TreePath,
+    P: AsRef<[u8]>,
     V: AsRef<[u8]>,
     H: Digest,
 {
@@ -129,13 +106,13 @@ where
 
 /// Returned by .insert() to update the values' storage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InsertAction {
+pub(crate) enum InsertAction {
     // /// No action is required.
     // Nothing,
     /// An insertion is required. The argument points to a node.
-    Insert(usize),
+    Insert(NodeRef),
     /// A replacement is required. The argument points to a value.
-    Replace(usize),
+    Replace(ValueRef),
 
     /// Special insert where its node_ref is not known.
     InsertSelf,
@@ -143,7 +120,7 @@ pub enum InsertAction {
 
 impl InsertAction {
     /// Replace `Self::InsertSelf` with `Self::Insert(node_ref)`.
-    pub fn quantize_self(self, node_ref: usize) -> Self {
+    pub fn quantize_self(self, node_ref: NodeRef) -> Self {
         match self {
             Self::InsertSelf => Self::Insert(node_ref),
             _ => self,
