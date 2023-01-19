@@ -4,11 +4,11 @@
 
 Implementation of Ethereum's Patricia Merkle tree in Rust
 
-[Report Bug](https://github.com/lambdaclass/starknet_in_rust/issues/new?labels=bug&title=bug%3A+) · [Request Feature](https://github.com/lambdaclass/starknet_in_rust/issues/new?labels=enhancement&title=feat%3A+)
+[Report Bug](https://github.com/lambdaclass/merkle_patricia_tree/issues/new?labels=bug&title=bug%3A+) · [Request Feature](https://github.com/lambdaclass/merkle_patricia_tree/issues/new?labels=enhancement&title=feat%3A+)
 
 [![Rust](https://github.com/lambdaclass/merkle_patricia_tree/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/lambdaclass/merkle_patricia_tree/actions/workflows/rust.yml)
 [![codecov](https://img.shields.io/codecov/c/github/lambdaclass/merkle_patricia_tree)](https://codecov.io/gh/lambdaclass/merkle_patricia_tree)
-[![license](https://img.shields.io/github/license/lambdaclass/starknet_in_rust)](/LICENSE)
+[![license](https://img.shields.io/github/license/lambdaclass/merkle_patricia_tree)](/LICENSE)
 [![pr-welcome]](#-contributing)
 
 [pr-welcome]: https://img.shields.io/static/v1?color=orange&label=PRs&style=flat&message=welcome
