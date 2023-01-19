@@ -179,6 +179,6 @@ Thats why a flag is introduced to differenciate between an odd or even remaining
 
 ## ⚖️ License
 
-This project is licensed under the MIT license.
+This project is licensed under the Apache 2.0 license.
 
 See [LICENSE](/LICENSE) for more information.
