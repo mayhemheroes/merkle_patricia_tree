@@ -2,43 +2,24 @@
 
 #![deny(warnings)]
 
-use self::{nibble::Nibble, node::Node};
-use crate::nodes::LeafNode;
-use digest::{Digest, Output};
-use nibble::NibbleSlice;
-use node::InsertAction;
-use slab::Slab;
-use std::{
-    io::Write,
-    mem::{replace, size_of},
+use self::{
+    nibble::NibbleSlice,
+    node::{InsertAction, Node},
+    nodes::LeafNode,
+    storage::{NodeRef, NodesStorage, ValueRef, ValuesStorage},
 };
-use util::{DigestBuf, INVALID_REF};
+use digest::{Digest, Output};
+use hashing::NodeHashRef;
+use slab::Slab;
+use std::mem::{replace, size_of};
 
-pub mod nibble;
+#[cfg(feature = "tree-dump")]
+pub mod dump;
+mod hashing;
+mod nibble;
 mod node;
 mod nodes;
-mod util;
-
-type NodesStorage<P, V, H> = Slab<Node<P, V, H>>;
-type ValuesStorage<P, V> = Slab<(P, V)>;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct NodeRef(pub usize);
-
-impl Default for NodeRef {
-    fn default() -> Self {
-        Self(INVALID_REF)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct ValueRef(pub usize);
-
-impl Default for ValueRef {
-    fn default() -> Self {
-        Self(INVALID_REF)
-    }
-}
+mod storage;
 
 /// Patricia Merkle Tree implementation.
 #[derive(Clone, Debug, Default)]
@@ -55,6 +36,8 @@ where
     nodes: NodesStorage<P, V, H>,
     /// Stores the actual nodes' hashed paths and values.
     values: ValuesStorage<P, V>,
+
+    hash: (bool, Output<H>),
 }
 
 impl<P, V, H> PatriciaMerkleTree<P, V, H>
@@ -66,9 +49,10 @@ where
     /// Create an empty tree.
     pub fn new() -> Self {
         Self {
-            root_ref: NodeRef(INVALID_REF),
+            root_ref: NodeRef::default(),
             nodes: Slab::new(),
             values: Slab::new(),
+            hash: (false, Default::default()),
         }
     }
 
@@ -84,14 +68,17 @@ where
 
     /// Retrieve a value from the tree given its path.
     pub fn get(&self, path: &P) -> Option<&V> {
-        self.nodes.get(self.root_ref.0).and_then(|root_node| {
+        self.nodes.get(*self.root_ref).and_then(|root_node| {
             root_node.get(&self.nodes, &self.values, NibbleSlice::new(path.as_ref()))
         })
     }
 
     /// Insert a value into the tree.
     pub fn insert(&mut self, path: P, value: V) -> Option<V> {
-        match self.nodes.try_remove(self.root_ref.0) {
+        // Mark hash as dirty.
+        self.hash.0 = false;
+
+        match self.nodes.try_remove(*self.root_ref) {
             Some(root_node) => {
                 // If the tree is not empty, call the root node's insertion logic.
                 let (root_node, insert_action) = root_node.insert(
@@ -99,20 +86,18 @@ where
                     &mut self.values,
                     NibbleSlice::new(path.as_ref()),
                 );
-                self.root_ref = NodeRef(self.nodes.insert(root_node));
+                self.root_ref = NodeRef::new(self.nodes.insert(root_node));
 
                 match insert_action.quantize_self(self.root_ref) {
                     InsertAction::Insert(node_ref) => {
-                        let value_ref = ValueRef(self.values.insert((path, value)));
+                        let value_ref = ValueRef::new(self.values.insert((path, value)));
                         match self
                             .nodes
-                            .get_mut(node_ref.0)
+                            .get_mut(*node_ref)
                             .expect("inconsistent internal tree structure")
                         {
                             Node::Leaf(leaf_node) => leaf_node.update_value_ref(value_ref),
-                            Node::Branch(branch_node) => {
-                                branch_node.update_value_ref(Some(value_ref))
-                            }
+                            Node::Branch(branch_node) => branch_node.update_value_ref(value_ref),
                             _ => panic!("inconsistent internal tree structure"),
                         };
 
@@ -121,7 +106,7 @@ where
                     InsertAction::Replace(value_ref) => {
                         let (_, old_value) = self
                             .values
-                            .get_mut(value_ref.0)
+                            .get_mut(*value_ref)
                             .expect("inconsistent internal tree structure");
 
                         Some(replace(old_value, value))
@@ -131,8 +116,8 @@ where
             }
             None => {
                 // If the tree is empty, just add a leaf.
-                let value_ref = ValueRef(self.values.insert((path, value)));
-                self.root_ref = NodeRef(self.nodes.insert(LeafNode::new(value_ref).into()));
+                let value_ref = ValueRef::new(self.values.insert((path, value)));
+                self.root_ref = NodeRef::new(self.nodes.insert(LeafNode::new(value_ref).into()));
 
                 None
             }
@@ -140,19 +125,34 @@ where
     }
 
     /// Return the root hash of the tree (or recompute if needed).
-    pub fn compute_hash(&mut self) -> Option<Output<H>> {
-        self.nodes.try_remove(self.root_ref.0).map(|mut root_node| {
-            // TODO: Test what happens when the root node's hash encoding is hashed (len == 32).
-            //   Double hash? Or forward the first one?
-            let mut hasher = DigestBuf::<H>::new();
-            hasher
-                .write_all(root_node.compute_hash(&mut self.nodes, &self.values, 0))
-                .unwrap();
-            let output = hasher.finalize();
+    pub fn compute_hash(&mut self) -> &Output<H> {
+        if self.hash.0 {
+            &self.hash.1
+        } else {
+            if self.root_ref.is_valid() {
+                let root_node = self
+                    .nodes
+                    .get(*self.root_ref)
+                    .expect("inconsistent internal tree structure");
 
-            self.root_ref = NodeRef(self.nodes.insert(root_node));
-            output
-        })
+                match root_node.compute_hash(&self.nodes, &self.values, 0) {
+                    NodeHashRef::Inline(x) => {
+                        H::new().chain_update(&*x).finalize_into(&mut self.hash.1)
+                    }
+                    NodeHashRef::Hashed(x) => self.hash.1.copy_from_slice(&x),
+                }
+
+                self.hash.0 = true;
+            } else {
+                H::new()
+                    .chain_update([0x80])
+                    .finalize_into(&mut self.hash.1);
+
+                self.hash.0 = true;
+            }
+
+            &self.hash.1
+        }
     }
 
     /// Calculate approximated memory usage (both used and allocated).
@@ -180,10 +180,41 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use crate::*;
-    use proptest::collection::{hash_set, vec};
+    use hex_literal::hex;
+    use proptest::collection::{btree_set, vec};
     use proptest::prelude::*;
     use sha3::Keccak256;
+
+    #[test]
+    fn compute_hash() {
+        let mut tree = PatriciaMerkleTree::<&[u8], &[u8], Keccak256>::new();
+
+        tree.insert(b"first", b"value");
+        tree.insert(b"second", b"value");
+
+        assert_eq!(
+            tree.compute_hash().as_slice(),
+            hex!("f7537e7f4b313c426440b7fface6bff76f51b3eb0d127356efbe6f2b3c891501"),
+        );
+    }
+
+    #[test]
+    fn compute_hash_long() {
+        let mut tree = PatriciaMerkleTree::<&[u8], &[u8], Keccak256>::new();
+
+        tree.insert(b"first", b"value");
+        tree.insert(b"second", b"value");
+        tree.insert(b"third", b"value");
+        tree.insert(b"fourth", b"value");
+
+        assert_eq!(
+            tree.compute_hash().as_slice(),
+            hex!("e2ff76eca34a96b68e6871c74f2a5d9db58e59f82073276866fdd25e560cedea"),
+        );
+    }
 
     #[test]
     fn get_inserted() {
@@ -214,14 +245,13 @@ mod test {
 
             tree.insert(path.clone(), value.clone());
             let item = tree.get(&path);
-            assert!(item.is_some());
+            prop_assert!(item.is_some());
             let item = item.unwrap();
-            assert_eq!(item, &value);
+            prop_assert_eq!(item, &value);
         }
 
-
         #[test]
-        fn proptest_get_inserted_multiple(paths in hash_set(vec(any::<u8>(), 2..10), 2..10)) {
+        fn proptest_get_inserted_multiple(paths in btree_set(vec(any::<u8>(), 1..100), 1..100)) {
             let mut tree = PatriciaMerkleTree::<Vec<u8>, Vec<u8>, Keccak256>::new();
 
             let paths: Vec<Vec<u8>> = paths.into_iter().collect();
@@ -233,8 +263,8 @@ mod test {
 
             for (path, value) in paths.iter().zip(values.iter()) {
                 let item = tree.get(path);
-                assert!(item.is_some());
-                assert_eq!(item.unwrap(), value);
+                prop_assert!(item.is_some());
+                prop_assert_eq!(item.unwrap(), value);
             }
         }
     }
@@ -269,17 +299,6 @@ mod test {
         let item = tree.get(&vec![0, 0]);
         assert!(item.is_some());
         assert_eq!(item.unwrap(), &vec![0, 0]);
-    }
-
-    #[test]
-    fn test() {
-        let mut tree = PatriciaMerkleTree::<Vec<u8>, Vec<u8>, Keccak256>::new();
-
-        tree.insert(vec![48], vec![0]);
-        tree.insert(vec![49], vec![1]);
-
-        assert_eq!(tree.get(&vec![48]), Some(&vec![0]));
-        assert_eq!(tree.get(&vec![49]), Some(&vec![1]));
     }
 
     #[test]
@@ -360,5 +379,94 @@ mod test {
 
         insert_vecs(&mut tree, &vecs);
         check_vecs(&mut tree, &vecs);
+    }
+
+    #[test]
+    fn proptest_regression_72044483941df7c265fa4a9635fd6c235f7790f35d878277fea7955387e59fea() {
+        let mut tree = PatriciaMerkleTree::<Vec<u8>, Vec<u8>, Keccak256>::new();
+
+        tree.insert(vec![0x00], vec![0x00]);
+        tree.insert(vec![0xC8], vec![0xC8]);
+        tree.insert(vec![0xC8, 0x00], vec![0xC8, 0x00]);
+
+        assert_eq!(tree.get(&vec![0x00]), Some(&vec![0x00]));
+        assert_eq!(tree.get(&vec![0xC8]), Some(&vec![0xC8]));
+        assert_eq!(tree.get(&vec![0xC8, 0x00]), Some(&vec![0xC8, 0x00]));
+    }
+
+    #[test]
+    fn proptest_regression_4f3f0c44fdba16d943c33475dc4fa4431123ca274d17e3529dc7aa778de5655b() {
+        let mut tree = PatriciaMerkleTree::<Vec<u8>, Vec<u8>, Keccak256>::new();
+
+        tree.insert(vec![0x00], vec![0x00]);
+        tree.insert(vec![0x01], vec![0x01]);
+        tree.insert(vec![0x10], vec![0x10]);
+        tree.insert(vec![0x19], vec![0x19]);
+        tree.insert(vec![0x19, 0x00], vec![0x19, 0x00]);
+        tree.insert(vec![0x1A], vec![0x1A]);
+
+        assert_eq!(tree.get(&vec![0x00]), Some(&vec![0x00]));
+        assert_eq!(tree.get(&vec![0x01]), Some(&vec![0x01]));
+        assert_eq!(tree.get(&vec![0x10]), Some(&vec![0x10]));
+        assert_eq!(tree.get(&vec![0x19]), Some(&vec![0x19]));
+        assert_eq!(tree.get(&vec![0x19, 0x00]), Some(&vec![0x19, 0x00]));
+        assert_eq!(tree.get(&vec![0x1A]), Some(&vec![0x1A]));
+    }
+
+    #[test]
+    fn compute_hashes() {
+        expect_hash(vec![
+            (b"doe".to_vec(), b"reindeer".to_vec()),
+            (b"dog".to_vec(), b"puppy".to_vec()),
+            (b"dogglesworth".to_vec(), b"cat".to_vec()),
+        ])
+        .unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_compare_hashes_simple(path in vec(any::<u8>(), 1..32), value in vec(any::<u8>(), 1..100)) {
+            expect_hash(vec![(path, value)])?;
+        }
+
+        #[test]
+        fn proptest_compare_hashes_multiple(data in btree_set((vec(any::<u8>(), 1..32), vec(any::<u8>(), 1..100)), 1..100)) {
+            expect_hash(data.into_iter().collect())?;
+        }
+    }
+
+    fn expect_hash(data: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), TestCaseError> {
+        prop_assert_eq!(
+            compute_hash_cita_trie(data.clone()),
+            compute_hash_ours(data)
+        );
+        Ok(())
+    }
+
+    fn compute_hash_ours(data: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
+        let mut tree = PatriciaMerkleTree::<_, _, Keccak256>::new();
+
+        for (key, val) in data {
+            tree.insert(key, val);
+        }
+
+        tree.compute_hash().as_slice().to_vec()
+    }
+
+    fn compute_hash_cita_trie(data: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
+        use cita_trie::MemoryDB;
+        use cita_trie::{PatriciaTrie, Trie};
+        use hasher::HasherKeccak;
+
+        let memdb = Arc::new(MemoryDB::new(true));
+        let hasher = Arc::new(HasherKeccak::new());
+
+        let mut trie = PatriciaTrie::new(Arc::clone(&memdb), Arc::clone(&hasher));
+
+        for (key, value) in data {
+            trie.insert(key.to_vec(), value.to_vec()).unwrap();
+        }
+
+        trie.root().unwrap()
     }
 }

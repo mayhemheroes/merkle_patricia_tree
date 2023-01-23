@@ -1,12 +1,12 @@
 use super::LeafNode;
 use crate::{
+    hashing::{NodeHash, NodeHashRef, NodeHasher},
     nibble::NibbleSlice,
     node::{InsertAction, Node},
-    util::{write_list, write_slice, DigestBuf},
     NodeRef, NodesStorage, ValueRef, ValuesStorage,
 };
-use digest::{Digest, Output};
-use std::{io::Cursor, marker::PhantomData};
+use digest::Digest;
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug)]
 pub struct BranchNode<P, V, H>
@@ -16,10 +16,10 @@ where
     H: Digest,
 {
     // The node zero is always the root, which cannot be a child.
-    choices: [Option<NodeRef>; 16],
-    value_ref: Option<ValueRef>,
+    pub(crate) choices: [NodeRef; 16],
+    pub(crate) value_ref: ValueRef,
 
-    hash: (usize, Output<H>),
+    hash: NodeHash<H>,
     phantom: PhantomData<(P, V, H)>,
 }
 
@@ -29,16 +29,16 @@ where
     V: AsRef<[u8]>,
     H: Digest,
 {
-    pub(crate) fn new(choices: [Option<NodeRef>; 16]) -> Self {
+    pub(crate) fn new(choices: [NodeRef; 16]) -> Self {
         Self {
             choices,
-            value_ref: None,
-            hash: (0, Default::default()),
+            value_ref: Default::default(),
+            hash: Default::default(),
             phantom: PhantomData,
         }
     }
 
-    pub(crate) fn update_value_ref(&mut self, new_value_ref: Option<ValueRef>) {
+    pub(crate) fn update_value_ref(&mut self, new_value_ref: ValueRef) {
         self.value_ref = new_value_ref;
     }
 
@@ -55,23 +55,28 @@ where
             .map(usize::from)
             .and_then(|choice| {
                 // Delegate to children if present.
-                self.choices[choice].and_then(|child_ref| {
+                let child_ref = self.choices[choice];
+                if child_ref.is_valid() {
                     let child_node = nodes
-                        .get(child_ref.0)
+                        .get(*child_ref)
                         .expect("inconsistent internal tree structure");
 
                     child_node.get(nodes, values, path)
-                })
+                } else {
+                    None
+                }
             })
             .or_else(|| {
                 // Return internal value if present.
-                self.value_ref.as_ref().map(|child_ref| {
+                if self.value_ref.is_valid() {
                     let (_, value) = values
-                        .get(child_ref.0)
+                        .get(*self.value_ref)
                         .expect("inconsistent internal tree structure");
 
-                    value
-                })
+                    Some(value)
+                } else {
+                    None
+                }
             })
     }
 
@@ -84,85 +89,112 @@ where
         // If path is at the end, insert or replace its own value.
         // Otherwise, check the corresponding choice and insert or delegate accordingly.
 
-        self.hash.0 = 0;
+        self.hash.mark_as_dirty();
 
         let insert_action = match path.next() {
             Some(choice) => match &mut self.choices[choice as usize] {
-                Some(choice_ref) => {
+                choice_ref if !choice_ref.is_valid() => {
+                    let child_ref = nodes.insert(LeafNode::new(Default::default()).into());
+                    *choice_ref = NodeRef::new(child_ref);
+
+                    InsertAction::Insert(NodeRef::new(child_ref))
+                }
+                choice_ref => {
                     let child_node = nodes
-                        .try_remove(choice_ref.0)
+                        .try_remove(**choice_ref)
                         .expect("inconsistent internal tree structure");
 
                     let (child_node, insert_action) = child_node.insert(nodes, values, path);
-                    *choice_ref = NodeRef(nodes.insert(child_node));
+                    *choice_ref = NodeRef::new(nodes.insert(child_node));
 
                     insert_action.quantize_self(*choice_ref)
                 }
-                choice_ref => {
-                    let child_ref = nodes.insert(LeafNode::new(Default::default()).into());
-                    *choice_ref = Some(NodeRef(child_ref));
-
-                    InsertAction::Insert(NodeRef(child_ref))
-                }
             },
-            None => self
-                .value_ref
-                .map(InsertAction::Replace)
-                .unwrap_or(InsertAction::InsertSelf),
+            None => {
+                if self.value_ref.is_valid() {
+                    InsertAction::Replace(self.value_ref)
+                } else {
+                    InsertAction::InsertSelf
+                }
+            }
         };
 
         (self.into(), insert_action)
     }
 
     pub fn compute_hash(
-        &mut self,
-        nodes: &mut NodesStorage<P, V, H>,
+        &self,
+        nodes: &NodesStorage<P, V, H>,
         values: &ValuesStorage<P, V>,
         key_offset: usize,
-    ) -> &[u8] {
-        if self.hash.0 == 0 {
-            let mut digest_buf = DigestBuf::<H>::new();
+    ) -> NodeHashRef<H> {
+        self.hash.extract_ref().unwrap_or_else(|| {
+            let mut children_len: usize = self
+                .choices
+                .iter()
+                .map(|choice| {
+                    choice
+                        .is_valid()
+                        .then(|| {
+                            let child_node = nodes
+                                .get(**choice)
+                                .expect("inconsistent internal tree structure");
 
-            let mut payload = Vec::new();
-            for choice in &mut self.choices {
-                match choice {
-                    Some(child_ref) => {
-                        let mut child_node = nodes
-                            .try_remove(child_ref.0)
-                            .expect("inconsistent internal tree structure");
+                            let child_hash_ref =
+                                child_node.compute_hash(nodes, values, key_offset + 1);
+                            match child_hash_ref {
+                                NodeHashRef::Inline(x) => x.len(),
+                                NodeHashRef::Hashed(x) => NodeHasher::<H>::bytes_len(x.len(), x[0]),
+                            }
+                        })
+                        .unwrap_or(1)
+                })
+                .sum();
 
-                        payload.extend_from_slice(child_node.compute_hash(
-                            nodes,
-                            values,
-                            key_offset + 1,
-                        ));
+            if self.value_ref.is_valid() {
+                let (_, value) = values
+                    .get(*self.value_ref)
+                    .expect("inconsistent internal tree structure");
 
-                        *child_ref = NodeRef(nodes.insert(child_node));
-                    }
-                    None => payload.push(0x80),
-                }
-            }
-
-            if let Some(value_ref) = self.value_ref {
-                write_slice(
-                    values
-                        .get(value_ref.0)
-                        .expect("inconsistent internal tree structure")
-                        .1
-                        .as_ref(),
-                    {
-                        let mut cursor = Cursor::new(&mut payload);
-                        cursor.set_position(cursor.get_ref().len() as u64);
-                        cursor
-                    },
+                children_len += NodeHasher::<H>::bytes_len(
+                    value.as_ref().len(),
+                    value.as_ref().first().copied().unwrap_or_default(),
                 );
+            } else {
+                children_len += 1;
             }
 
-            write_list(&payload, &mut digest_buf);
-            self.hash.0 = digest_buf.extract_or_finalize(&mut self.hash.1);
-        }
+            let mut hasher = NodeHasher::new(&self.hash);
+            hasher.write_list_header(children_len);
 
-        &self.hash.1[..self.hash.0]
+            self.choices.iter().for_each(|choice| {
+                if choice.is_valid() {
+                    let child_node = nodes
+                        .get(**choice)
+                        .expect("inconsistent internal tree structure");
+
+                    let child_hash_ref = child_node.compute_hash(nodes, values, key_offset + 1);
+                    match child_hash_ref {
+                        NodeHashRef::Inline(x) => hasher.write_raw(&x),
+                        NodeHashRef::Hashed(x) => hasher.write_bytes(&x),
+                    }
+                } else {
+                    hasher.write_bytes(&[]);
+                }
+            });
+
+            if self.value_ref.is_valid() {
+                let (_, value) = values
+                    .get(*self.value_ref)
+                    .expect("inconsistent internal tree structure");
+
+                hasher.write_bytes(value.as_ref());
+            } else {
+                hasher.write_bytes(&[]);
+            }
+
+            hasher.finalize()
+        })
     }
 }
 
@@ -175,10 +207,10 @@ mod test {
     #[test]
     fn new() {
         let node = BranchNode::<Vec<u8>, Vec<u8>, Keccak256>::new({
-            let mut choices = [None; 16];
+            let mut choices = [Default::default(); 16];
 
-            choices[2] = Some(NodeRef(2));
-            choices[5] = Some(NodeRef(5));
+            choices[2] = NodeRef::new(2);
+            choices[5] = NodeRef::new(5);
 
             choices
         });
@@ -186,22 +218,22 @@ mod test {
         assert_eq!(
             node.choices,
             [
-                None,
-                None,
-                Some(NodeRef(2)),
-                None,
-                None,
-                Some(NodeRef(5)),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                Default::default(),
+                Default::default(),
+                NodeRef::new(2),
+                Default::default(),
+                Default::default(),
+                NodeRef::new(5),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
             ],
         );
     }
@@ -286,7 +318,7 @@ mod test {
         };
 
         // TODO: Check node and children.
-        assert_eq!(insert_action, InsertAction::Insert(NodeRef(2)));
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(2)));
     }
 
     #[test]
@@ -313,5 +345,115 @@ mod test {
 
         // TODO: Check node and children.
         assert_eq!(insert_action, InsertAction::InsertSelf);
+    }
+
+    #[test]
+    fn compute_hash_two_choices() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            branch {
+                2 => leaf { vec![0x20] => vec![0x20] },
+                4 => leaf { vec![0x40] => vec![0x40] },
+            }
+        };
+
+        assert_eq!(
+            node.compute_hash(&nodes, &values, 0).as_ref(),
+            &[
+                0xD5, 0x80, 0x80, 0xC2, 0x30, 0x20, 0x80, 0xC2, 0x30, 0x40, 0x80, 0x80, 0x80, 0x80,
+                0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+            ],
+        );
+    }
+
+    #[test]
+    fn compute_hash_all_choices() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            branch {
+                0x0 => leaf { vec![0x00] => vec![0x00] },
+                0x1 => leaf { vec![0x10] => vec![0x10] },
+                0x2 => leaf { vec![0x20] => vec![0x20] },
+                0x3 => leaf { vec![0x30] => vec![0x30] },
+                0x4 => leaf { vec![0x40] => vec![0x40] },
+                0x5 => leaf { vec![0x50] => vec![0x50] },
+                0x6 => leaf { vec![0x60] => vec![0x60] },
+                0x7 => leaf { vec![0x70] => vec![0x70] },
+                0x8 => leaf { vec![0x80] => vec![0x80] },
+                0x9 => leaf { vec![0x90] => vec![0x90] },
+                0xA => leaf { vec![0xA0] => vec![0xA0] },
+                0xB => leaf { vec![0xB0] => vec![0xB0] },
+                0xC => leaf { vec![0xC0] => vec![0xC0] },
+                0xD => leaf { vec![0xD0] => vec![0xD0] },
+                0xE => leaf { vec![0xE0] => vec![0xE0] },
+                0xF => leaf { vec![0xF0] => vec![0xF0] },
+            }
+        };
+
+        assert_eq!(
+            node.compute_hash(&nodes, &values, 0).as_ref(),
+            &[
+                0x0A, 0x3C, 0x06, 0x2D, 0x4A, 0xE3, 0x61, 0xEC, 0xC4, 0x82, 0x07, 0xB3, 0x2A, 0xDB,
+                0x6A, 0x3A, 0x3F, 0x3E, 0x98, 0x33, 0xC8, 0x9C, 0x9A, 0x71, 0x66, 0x3F, 0x4E, 0xB5,
+                0x61, 0x72, 0xD4, 0x9D,
+            ],
+        );
+    }
+
+    #[test]
+    fn compute_hash_one_choice_with_value() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            branch {
+                2 => leaf { vec![0x20] => vec![0x20] },
+                4 => leaf { vec![0x40] => vec![0x40] },
+            } with_leaf { vec![] => vec![] }
+        };
+
+        assert_eq!(
+            node.compute_hash(&nodes, &values, 0).as_ref(),
+            &[
+                0xD5, 0x80, 0x80, 0xC2, 0x30, 0x20, 0x80, 0xC2, 0x30, 0x40, 0x80, 0x80, 0x80, 0x80,
+                0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+            ],
+        );
+    }
+
+    #[test]
+    fn compute_hash_all_choices_with_value() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            branch {
+                0x0 => leaf { vec![0x00] => vec![0x00] },
+                0x1 => leaf { vec![0x10] => vec![0x10] },
+                0x2 => leaf { vec![0x20] => vec![0x20] },
+                0x3 => leaf { vec![0x30] => vec![0x30] },
+                0x4 => leaf { vec![0x40] => vec![0x40] },
+                0x5 => leaf { vec![0x50] => vec![0x50] },
+                0x6 => leaf { vec![0x60] => vec![0x60] },
+                0x7 => leaf { vec![0x70] => vec![0x70] },
+                0x8 => leaf { vec![0x80] => vec![0x80] },
+                0x9 => leaf { vec![0x90] => vec![0x90] },
+                0xA => leaf { vec![0xA0] => vec![0xA0] },
+                0xB => leaf { vec![0xB0] => vec![0xB0] },
+                0xC => leaf { vec![0xC0] => vec![0xC0] },
+                0xD => leaf { vec![0xD0] => vec![0xD0] },
+                0xE => leaf { vec![0xE0] => vec![0xE0] },
+                0xF => leaf { vec![0xF0] => vec![0xF0] },
+            } with_leaf { vec![] => vec![] }
+        };
+
+        assert_eq!(
+            node.compute_hash(&nodes, &values, 0).as_ref(),
+            &[
+                0x0A, 0x3C, 0x06, 0x2D, 0x4A, 0xE3, 0x61, 0xEC, 0xC4, 0x82, 0x07, 0xB3, 0x2A, 0xDB,
+                0x6A, 0x3A, 0x3F, 0x3E, 0x98, 0x33, 0xC8, 0x9C, 0x9A, 0x71, 0x66, 0x3F, 0x4E, 0xB5,
+                0x61, 0x72, 0xD4, 0x9D,
+            ],
+        );
     }
 }

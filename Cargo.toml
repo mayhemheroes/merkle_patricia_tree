@@ -7,14 +7,20 @@ edition = "2021"
 name = "bench"
 harness = false
 
+[features]
+tree-dump = []
+
 [dependencies]
 digest = "0.10.6"
 generic-array = "0.14.6"
 slab = "0.4.7"
-smallvec = "1.10.0"
+smallvec = { version = "1.10.0", features = ["const_generics", "union"] }
 
 [dev-dependencies]
+cita_trie = "4.0.0"
 criterion = "0.4.0"
+hasher = "0.1.4"
+hex-literal = "0.3.4"
 proptest = "1.0.0"
 rand = "0.8.5"
 sha3 = "0.10.6"

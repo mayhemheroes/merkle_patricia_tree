@@ -1,12 +1,13 @@
 use super::BranchNode;
 use crate::{
+    hashing::{NodeHash, NodeHashRef, NodeHasher, PathKind},
     nibble::{NibbleSlice, NibbleVec},
     node::{InsertAction, Node},
-    util::{encode_path, write_list, write_slice, DigestBuf},
+    nodes::LeafNode,
     NodeRef, NodesStorage, ValuesStorage,
 };
-use digest::{Digest, Output};
-use std::{io::Cursor, marker::PhantomData};
+use digest::Digest;
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug)]
 pub struct ExtensionNode<P, V, H>
@@ -15,12 +16,12 @@ where
     V: AsRef<[u8]>,
     H: Digest,
 {
-    prefix: NibbleVec,
+    pub(crate) prefix: NibbleVec,
     // The child node may only be a branch, but it's not included directly by value to avoid
     // inflating `Node`'s size too much.
-    child_ref: NodeRef,
+    pub(crate) child_ref: NodeRef,
 
-    hash: (usize, Output<H>),
+    hash: NodeHash<H>,
     phantom: PhantomData<(P, V, H)>,
 }
 
@@ -34,7 +35,7 @@ where
         Self {
             prefix,
             child_ref,
-            hash: (0, Default::default()),
+            hash: Default::default(),
             phantom: PhantomData,
         }
     }
@@ -51,7 +52,7 @@ where
         path.skip_prefix(&self.prefix)
             .then(|| {
                 let child_node = nodes
-                    .get(self.child_ref.0)
+                    .get(*self.child_ref)
                     .expect("inconsistent internal tree structure");
 
                 child_node.get(nodes, values, path)
@@ -76,32 +77,23 @@ where
         //   extension { [0, 1, 2], child } -> extension { [0, 1], branch { 2 => child } with_value ! }
         //   extension { [0, 1, 2], child } -> extension { [0, 1, 2], child }
 
-        self.hash.0 = 0;
+        self.hash.mark_as_dirty();
 
         if path.skip_prefix(&self.prefix) {
             let child_node = nodes
-                .try_remove(self.child_ref.0)
+                .try_remove(*self.child_ref)
                 .expect("inconsistent internal tree structure");
 
             let (child_node, insert_action) = child_node.insert(nodes, values, path);
-            self.child_ref = NodeRef(nodes.insert(child_node));
+            self.child_ref = NodeRef::new(nodes.insert(child_node));
 
             let insert_action = insert_action.quantize_self(self.child_ref);
             (self.into(), insert_action)
         } else {
-            // TODO: Implement dedicated method (avoid half-byte iterators).
-            let offset = self
-                .prefix
-                .iter()
-                .zip(path.clone())
-                .take_while(|(a, b)| a == b)
-                .count();
-            assert!(
-                offset < self.prefix.iter().count(),
-                "{:#02x?}, {:#02x?}",
-                self.prefix,
-                path
-            );
+            // TODO: Investigate why offset sometimes points after the last nibble in
+            //   `self.split_extract_at()` causing an assert to fail.
+            let offset = path.clone().count_prefix_vec(&self.prefix);
+            path.offset_add(offset);
             let (left_prefix, choice, right_prefix) = self.prefix.split_extract_at(offset);
 
             let left_prefix = (!left_prefix.is_empty()).then_some(left_prefix);
@@ -112,64 +104,75 @@ where
                 .map(|right_prefix| {
                     nodes.insert(ExtensionNode::new(right_prefix, self.child_ref).into())
                 })
-                .unwrap_or(self.child_ref.0);
+                .unwrap_or(*self.child_ref);
 
             // Branch node (child is prefix right or self.child_ref).
+            let mut insert_node_ref = None;
             let branch_node = BranchNode::new({
-                let mut choices = [None; 16];
-                choices[choice as usize] = Some(NodeRef(right_prefix_node));
+                let mut choices = [Default::default(); 16];
+                choices[choice as usize] = NodeRef::new(right_prefix_node);
+                if let Some(c) = path.next() {
+                    choices[c as usize] =
+                        NodeRef::new(nodes.insert(LeafNode::new(Default::default()).into()));
+                    insert_node_ref = Some(choices[c as usize]);
+                }
                 choices
-            })
-            .into();
+            });
 
             // Prefix left node (if any, child is branch_node).
             match left_prefix {
                 Some(left_prefix) => {
-                    let branch_ref = NodeRef(nodes.insert(branch_node));
+                    let branch_ref = NodeRef::new(nodes.insert(branch_node.into()));
 
                     (
                         ExtensionNode::new(left_prefix, branch_ref).into(),
-                        InsertAction::Insert(branch_ref),
+                        InsertAction::Insert(insert_node_ref.unwrap_or(branch_ref)),
                     )
                 }
-                None => (branch_node, InsertAction::InsertSelf),
+                None => match insert_node_ref {
+                    Some(child_ref) => (branch_node.into(), InsertAction::Insert(child_ref)),
+                    None => (branch_node.into(), InsertAction::InsertSelf),
+                },
             }
         }
     }
 
     pub fn compute_hash(
-        &mut self,
-        nodes: &mut NodesStorage<P, V, H>,
+        &self,
+        nodes: &NodesStorage<P, V, H>,
         values: &ValuesStorage<P, V>,
         key_offset: usize,
-    ) -> &[u8] {
-        if self.hash.0 == 0 {
-            let mut payload = Cursor::new(Vec::new());
-
-            let mut digest_buf = DigestBuf::<H>::new();
-
-            let prefix = encode_path(&self.prefix.iter().collect::<Vec<_>>());
-            write_slice(&prefix, &mut payload);
-
-            let mut child = nodes
-                .try_remove(self.child_ref.0)
+    ) -> NodeHashRef<H> {
+        self.hash.extract_ref().unwrap_or_else(|| {
+            let child_node = nodes
+                .get(*self.child_ref)
                 .expect("inconsistent internal tree structure");
-            let child_hash =
-                child.compute_hash(nodes, values, key_offset + self.prefix.iter().count());
-            write_slice(child_hash, &mut payload);
 
-            write_list(&payload.into_inner(), &mut digest_buf);
-            self.hash.0 = digest_buf.extract_or_finalize(&mut self.hash.1);
-        }
+            let child_hash_ref =
+                child_node.compute_hash(nodes, values, key_offset + self.prefix.len());
 
-        &self.hash.1
+            let prefix_len = NodeHasher::<H>::path_len(self.prefix.len());
+            let child_len = match &child_hash_ref {
+                NodeHashRef::Inline(x) => x.len(),
+                NodeHashRef::Hashed(x) => NodeHasher::<H>::bytes_len(x.len(), x[0]),
+            };
+
+            let mut hasher = NodeHasher::new(&self.hash);
+            hasher.write_list_header(prefix_len + child_len);
+            hasher.write_path_vec(&self.prefix, PathKind::Extension);
+            match child_hash_ref {
+                NodeHashRef::Inline(x) => hasher.write_raw(&x),
+                NodeHashRef::Hashed(x) => hasher.write_bytes(&x),
+            }
+            hasher.finalize()
+        })
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{nibble::Nibble, pmt_node, pmt_state, util::INVALID_REF};
+    use crate::{nibble::Nibble, pmt_node, pmt_state};
     use sha3::Keccak256;
 
     #[test]
@@ -177,8 +180,8 @@ mod test {
         let node =
             ExtensionNode::<Vec<u8>, Vec<u8>, Keccak256>::new(NibbleVec::new(), Default::default());
 
-        assert_eq!(node.prefix.iter().count(), 0);
-        assert_eq!(node.child_ref, NodeRef(INVALID_REF));
+        assert_eq!(node.prefix.len(), 0);
+        assert_eq!(node.child_ref, NodeRef::default());
     }
 
     #[test]
@@ -241,7 +244,7 @@ mod test {
 
         // TODO: Check children.
         assert!(node.prefix.iter().eq([Nibble::V0].into_iter()));
-        assert_eq!(insert_action, InsertAction::Insert(NodeRef(2)));
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(2)));
     }
 
     #[test]
@@ -262,7 +265,7 @@ mod test {
         };
 
         // TODO: Check node and children.
-        assert_eq!(insert_action, InsertAction::InsertSelf);
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(3)));
     }
 
     #[test]
@@ -283,7 +286,7 @@ mod test {
         };
 
         // TODO: Check node and children.
-        assert_eq!(insert_action, InsertAction::InsertSelf);
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(4)));
     }
 
     #[test]
@@ -304,7 +307,7 @@ mod test {
         };
 
         // TODO: Check node and children.
-        assert_eq!(insert_action, InsertAction::Insert(NodeRef(3)));
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(3)));
     }
 
     #[test]
@@ -325,6 +328,50 @@ mod test {
         };
 
         // TODO: Check node and children.
-        assert_eq!(insert_action, InsertAction::Insert(NodeRef(3)));
+        assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(3)));
+    }
+
+    #[test]
+    fn compute_hash() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            extension { [0, 0], branch {
+                0 => leaf { vec![0x00, 0x00] => vec![0x12, 0x34] },
+                1 => leaf { vec![0x00, 0x10] => vec![0x56, 0x78] },
+            } }
+        };
+
+        let node_hash_ref = node.compute_hash(&nodes, &values, 0);
+        assert_eq!(
+            node_hash_ref.as_ref(),
+            &[
+                0xDD, 0x82, 0x00, 0x00, 0xD9, 0xC4, 0x30, 0x82, 0x12, 0x34, 0xC4, 0x30, 0x82, 0x56,
+                0x78, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+                0x80, 0x80,
+            ],
+        );
+    }
+
+    #[test]
+    fn compute_hash_long() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            extension { [0, 0], branch {
+                0 => leaf { vec![0x00, 0x00] => vec![0x12, 0x34, 0x56, 0x78, 0x9A] },
+                1 => leaf { vec![0x00, 0x10] => vec![0x34, 0x56, 0x78, 0x9A, 0xBC] },
+            } }
+        };
+
+        let node_hash_ref = node.compute_hash(&nodes, &values, 0);
+        assert_eq!(
+            node_hash_ref.as_ref(),
+            &[
+                0xFA, 0xBA, 0x42, 0x79, 0xB3, 0x9B, 0xCD, 0xEB, 0x7C, 0x53, 0x0F, 0xD7, 0x6E, 0x5A,
+                0xA3, 0x48, 0xD3, 0x30, 0x76, 0x26, 0x14, 0x84, 0x55, 0xA0, 0xAE, 0xFE, 0x0F, 0x52,
+                0x89, 0x5F, 0x36, 0x06,
+            ],
+        );
     }
 }

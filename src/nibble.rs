@@ -72,6 +72,10 @@ impl<'a> NibbleSlice<'a> {
         }
     }
 
+    pub fn len(&self) -> usize {
+        2 * self.data.len() - self.offset
+    }
+
     pub fn offset(&self) -> usize {
         self.offset
     }
@@ -170,19 +174,86 @@ impl<'a> NibbleSlice<'a> {
         self_slice == othr_slice
     }
 
-    pub fn peek(&self) -> Option<Nibble> {
-        self.data.get(self.offset >> 1).map(|byte| {
-            let byte = if self.offset % 2 != 0 {
-                byte & 0x0F
-            } else {
-                byte >> 4
-            };
+    pub fn count_prefix_vec(&mut self, other: &NibbleVec) -> usize {
+        if other.data.is_empty() {
+            return 0;
+        }
 
-            match Nibble::try_from(byte) {
-                Ok(x) => x,
-                Err(_) => unreachable!(),
+        // Check alignment and length.
+        assert_eq!(self.offset % 2 != 0, other.first_is_half);
+
+        // Compare first nibble (if not byte-aligned).
+        let mut eq_count = 0;
+        if other.first_is_half {
+            if self.next().map(u8::from) == Some(other.data[0] & 0x0F) {
+                eq_count += 1;
+            } else {
+                return 0;
             }
-        })
+        }
+
+        // Compare middle bytes.
+        let mut byte_nibble_count = 0;
+        let mut check_last_half = true;
+        for (a, b) in self.data[(self.offset + 1) >> 1..].iter().zip(
+            &other.data
+                [other.first_is_half as usize..other.data.len() - (other.last_is_half as usize)],
+        ) {
+            if a == b {
+                byte_nibble_count += 2;
+            } else if (a & 0xF0) == (b & 0xF0) {
+                byte_nibble_count += 1;
+                check_last_half = false;
+                break;
+            } else {
+                check_last_half = false;
+                break;
+            }
+        }
+        eq_count += byte_nibble_count;
+        self.offset += byte_nibble_count;
+
+        // Compare last nibble (if not byte-aligned).
+        if check_last_half
+            && other.last_is_half
+            && self.clone().next().map(u8::from) == other.data.last().map(|x| x >> 4)
+        {
+            eq_count += 1;
+        }
+
+        eq_count
+    }
+
+    pub fn count_prefix_slice(&self, other: &NibbleSlice) -> usize {
+        // Check offset (and therefore alignment implicitly).
+        assert_eq!(self.offset, other.offset);
+
+        // Check first nibble (if not byte-aligned).
+        let mut eq_count = 0;
+        if self.offset % 2 != 0 {
+            if (self.data[self.offset >> 1] & 0x0F) == (other.data[self.offset >> 1] & 0x0F) {
+                eq_count += 1;
+            } else {
+                return 0;
+            }
+        }
+
+        // Compare the rest.
+        for (a, b) in self.data[(self.offset + 1) >> 1..]
+            .iter()
+            .zip(&other.data[(self.offset + 1) >> 1..])
+        {
+            if a == b {
+                eq_count += 2;
+            } else if (a & 0xF0) == (b & 0xF0) {
+                eq_count += 1;
+                break;
+            } else {
+                break;
+            }
+        }
+
+        eq_count
     }
 }
 
@@ -214,13 +285,14 @@ impl<'a> Iterator for NibbleSlice<'a> {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NibbleVec {
-    data: SmallVec<[u8; 64]>,
+    data: SmallVec<[u8; 111]>,
 
     first_is_half: bool,
     last_is_half: bool,
 }
 
 impl NibbleVec {
+    #[cfg(test)]
     pub fn new() -> Self {
         NibbleVec {
             data: Default::default(),
@@ -229,6 +301,7 @@ impl NibbleVec {
         }
     }
 
+    #[cfg(test)]
     pub fn from_nibbles(data_iter: impl Iterator<Item = Nibble>) -> Self {
         let mut last_is_half = false;
         let mut data = SmallVec::new();
@@ -253,6 +326,10 @@ impl NibbleVec {
         self.data.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        2 * self.data.len() - self.first_is_half as usize - self.last_is_half as usize
+    }
+
     pub fn iter(&self) -> NibbleVecIter {
         NibbleVecIter {
             inner: self,
@@ -261,12 +338,6 @@ impl NibbleVec {
     }
 
     pub fn split_extract_at(self, index: usize) -> (NibbleVec, Nibble, NibbleVec) {
-        // println!("  data = {:x?}", self.data.as_slice());
-        // println!("  first_is_half = {}", self.first_is_half);
-        // println!("   last_is_half = {}", self.last_is_half);
-        // println!("  index = {index}");
-        // println!();
-
         let offset = (index + 1 + self.first_is_half as usize) >> 1;
         let mut left_vec = NibbleVec {
             data: SmallVec::from_slice(&self.data[..offset]),
@@ -274,13 +345,12 @@ impl NibbleVec {
             last_is_half: (index + self.first_is_half as usize) % 2 != 0,
         };
         left_vec.normalize();
-        // println!("left_vec = {left_vec:x?}");
 
         let offset = index + self.first_is_half as usize;
         // Check out of bounds for last half-byte.
         assert!(
             ((offset + self.last_is_half as usize) >> 1) < self.data.len(),
-            "out of bounds",
+            "out of bounds"
         );
         let value = if offset % 2 != 0 {
             self.data[offset >> 1] & 0x0F
@@ -291,7 +361,6 @@ impl NibbleVec {
             Ok(x) => x,
             Err(_) => unreachable!(),
         };
-        // println!("value = {value:?}");
 
         let offset = (index + 1 + self.first_is_half as usize) >> 1;
         let mut right_vec = NibbleVec {
@@ -304,8 +373,6 @@ impl NibbleVec {
             last_is_half: self.last_is_half,
         };
         right_vec.normalize();
-        // println!("right_vec = {right_vec:x?}");
-        // println!();
 
         (left_vec, value, right_vec)
     }
@@ -320,6 +387,7 @@ impl NibbleVec {
     }
 }
 
+#[derive(Clone)]
 pub struct NibbleVecIter<'a> {
     inner: &'a NibbleVec,
     pos: usize,
