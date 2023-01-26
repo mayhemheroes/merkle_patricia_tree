@@ -2,6 +2,7 @@
 
 #![deny(warnings)]
 
+pub use self::codec::Encode;
 use self::{
     nibble::NibbleSlice,
     node::{InsertAction, Node},
@@ -13,6 +14,7 @@ use hashing::NodeHashRef;
 use slab::Slab;
 use std::mem::{replace, size_of};
 
+mod codec;
 #[cfg(feature = "tree-dump")]
 pub mod dump;
 mod hashing;
@@ -26,8 +28,8 @@ mod util;
 #[derive(Clone, Debug, Default)]
 pub struct PatriciaMerkleTree<P, V, H>
 where
-    P: AsRef<[u8]>,
-    V: AsRef<[u8]>,
+    P: Encode,
+    V: Encode,
     H: Digest,
 {
     /// Reference to the root node.
@@ -43,8 +45,8 @@ where
 
 impl<P, V, H> PatriciaMerkleTree<P, V, H>
 where
-    P: AsRef<[u8]>,
-    V: AsRef<[u8]>,
+    P: Encode,
+    V: Encode,
     H: Digest,
 {
     /// Create an empty tree.
@@ -70,7 +72,12 @@ where
     /// Retrieve a value from the tree given its path.
     pub fn get(&self, path: &P) -> Option<&V> {
         self.nodes.get(*self.root_ref).and_then(|root_node| {
-            root_node.get(&self.nodes, &self.values, NibbleSlice::new(path.as_ref()))
+            let encoded_path = path.encode();
+            root_node.get(
+                &self.nodes,
+                &self.values,
+                NibbleSlice::new(encoded_path.as_ref()),
+            )
         })
     }
 
@@ -82,10 +89,11 @@ where
         match self.nodes.try_remove(*self.root_ref) {
             Some(root_node) => {
                 // If the tree is not empty, call the root node's insertion logic.
+                let encoded_path = path.encode();
                 let (root_node, insert_action) = root_node.insert(
                     &mut self.nodes,
                     &mut self.values,
-                    NibbleSlice::new(path.as_ref()),
+                    NibbleSlice::new(encoded_path.as_ref()),
                 );
                 self.root_ref = NodeRef::new(self.nodes.insert(root_node));
 
@@ -472,8 +480,8 @@ mod test {
     fn compute_hash_ours(data: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
         let mut tree = PatriciaMerkleTree::<_, _, Keccak256>::new();
 
-        for (key, val) in data {
-            tree.insert(key, val);
+        for (path, val) in data {
+            tree.insert(path, val);
         }
 
         tree.compute_hash().as_slice().to_vec()
@@ -489,8 +497,8 @@ mod test {
 
         let mut trie = PatriciaTrie::new(Arc::clone(&memdb), Arc::clone(&hasher));
 
-        for (key, value) in data {
-            trie.insert(key.to_vec(), value.to_vec()).unwrap();
+        for (path, value) in data {
+            trie.insert(path.to_vec(), value.to_vec()).unwrap();
         }
 
         trie.root().unwrap()
