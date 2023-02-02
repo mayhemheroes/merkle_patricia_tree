@@ -29,6 +29,10 @@ ext-bench-prepare:
 	cd ./external-benches/paprika-bench/
 	dotnet nuget add source -n merkle_patricia_tree $(pwd)/nuget-feed
 
+storage-bench:
+	hyperfine --prepare 'cargo b --release --all-targets' -w 2 -L nodes 100,1000,10000,100000 'cargo r --release --example storage-sled {nodes}'
+	hyperfine --prepare 'cargo b --release --all-targets' -w 2 -L nodes 100,1000,10000,100000 'cargo r --release --example storage-mdbx {nodes}'
+
 profile:
 	 cargo build --examples --profile=release-with-debug && \
 	 	rm -f plots/data.dat && \
