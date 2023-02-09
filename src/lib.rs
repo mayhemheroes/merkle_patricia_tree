@@ -12,7 +12,10 @@ use self::{
 use digest::{Digest, Output};
 use hashing::NodeHashRef;
 use slab::Slab;
-use std::mem::{replace, size_of};
+use std::{
+    fmt::Debug,
+    mem::{replace, size_of},
+};
 
 mod codec;
 #[cfg(feature = "tree-dump")]
@@ -183,8 +186,8 @@ where
         iter: impl IntoIterator<Item = (&'a P, &'a V)>,
     ) -> Output<H>
     where
-        P: 'a + Clone,
-        V: 'a + Clone,
+        P: 'a,
+        V: 'a,
     {
         util::compute_hash_from_sorted_iter::<P, V, H>(iter)
     }
