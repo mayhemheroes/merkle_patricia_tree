@@ -90,8 +90,6 @@ where
             let insert_action = insert_action.quantize_self(self.child_ref);
             (self.into(), insert_action)
         } else {
-            // TODO: Investigate why offset sometimes points after the last nibble in
-            //   `self.split_extract_at()` causing an assert to fail.
             let offset = path.clone().count_prefix_vec(&self.prefix);
             path.offset_add(offset);
             let (left_prefix, choice, right_prefix) = self.prefix.split_extract_at(offset);
@@ -134,6 +132,45 @@ where
                     None => (branch_node.into(), InsertAction::InsertSelf),
                 },
             }
+        }
+    }
+
+    pub fn remove(
+        mut self,
+        nodes: &mut NodesStorage<P, V, H>,
+        values: &mut ValuesStorage<P, V>,
+        mut path: NibbleSlice,
+    ) -> (Option<Node<P, V, H>>, Option<V>) {
+        // Possible flow paths:
+        //   - extension { a, branch { ... } } -> extension { a, branch { ... }}
+        //   - extension { a, branch { ... } } -> extension { a + b, branch { ... }}
+        //   - extension { a, branch { ... } } -> leaf { ... }
+
+        if path.skip_prefix(&self.prefix) {
+            let child_node = nodes
+                .try_remove(*self.child_ref)
+                .expect("inconsistent internal tree structure");
+
+            let (child_node, old_value) = child_node.remove(nodes, values, path);
+            if old_value.is_some() {
+                self.hash.mark_as_dirty();
+            }
+
+            let node = child_node.map(|x| match x {
+                Node::Branch(branch_node) => {
+                    self.child_ref = NodeRef::new(nodes.insert(branch_node.into()));
+                    self.into()
+                }
+                Node::Extension(extension_node) => {
+                    self.prefix.extend(&extension_node.prefix);
+                    self.into()
+                }
+                Node::Leaf(leaf_node) => leaf_node.into(),
+            });
+
+            (node, old_value)
+        } else {
+            (Some(self.into()), None)
         }
     }
 
@@ -340,6 +377,60 @@ mod test {
 
         // TODO: Check node and children.
         assert_eq!(insert_action, InsertAction::Insert(NodeRef::new(3)));
+    }
+
+    #[test]
+    fn remove_none() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            extension { [0], branch {
+                0 => leaf { vec![0x00] => vec![0x00] },
+                1 => leaf { vec![0x01] => vec![0x01] },
+            } }
+        };
+
+        let (node, value) = node.remove(&mut nodes, &mut values, NibbleSlice::new(&[0x02]));
+
+        assert!(matches!(node, Some(Node::Extension(_))));
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn remove_into_leaf() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            extension { [0], branch {
+                0 => leaf { vec![0x00] => vec![0x00] },
+                1 => leaf { vec![0x01] => vec![0x01] },
+            } }
+        };
+
+        let (node, value) = node.remove(&mut nodes, &mut values, NibbleSlice::new(&[0x01]));
+
+        assert!(matches!(node, Some(Node::Leaf(_))));
+        assert_eq!(value, Some(vec![0x01]));
+    }
+
+    #[test]
+    fn remove_into_extension() {
+        let (mut nodes, mut values) = pmt_state!(Vec<u8>);
+
+        let node = pmt_node! { @(nodes, values)
+            extension { [0], branch {
+                0 => leaf { vec![0x00] => vec![0x00] },
+                1 => extension { [0], branch {
+                    0 => leaf { vec![0x01, 0x00] => vec![0x01, 0x00] },
+                    1 => leaf { vec![0x01, 0x01] => vec![0x01, 0x01] },
+                } },
+            } }
+        };
+
+        let (node, value) = node.remove(&mut nodes, &mut values, NibbleSlice::new(&[0x00]));
+
+        assert!(matches!(node, Some(Node::Extension(_))));
+        assert_eq!(value, Some(vec![0x00]));
     }
 
     #[test]
