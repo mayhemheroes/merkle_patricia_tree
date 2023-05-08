@@ -1,0 +1,7 @@
+project: merkle_patricia_tree
+target: hash
+duration: 90
+
+cmds:
+    - cmd: /hash
+
